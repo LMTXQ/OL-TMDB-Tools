@@ -824,6 +824,9 @@
     right: 16px;
     bottom: 16px;
     z-index: 9997;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
   }
 
   .ol-tmdb-scroll-inner {
