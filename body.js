@@ -3220,4 +3220,71 @@ ${studios}
     bodyObserver.observe(document.body, { childList: true });
     inspectRuntimeCompatibility();
     bindToolbarLifecycle();
+
+    const scrollButtonSvg = (isUp) => `
+      <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <polyline points="${isUp ? "6 15 12 9 18 15" : "6 9 12 15 18 9"}"></polyline>
+      </svg>`;
+
+    const createScrollButton = () => {
+      if (document.getElementById("ol-tmdb-scroll-wrap")) return;
+      const wrap = document.createElement("div");
+      wrap.id = "ol-tmdb-scroll-wrap";
+      wrap.className = "ol-tmdb-scroll-wrap";
+      const inner = document.createElement("span");
+      inner.className = "ol-tmdb-scroll-inner";
+      const button = document.createElement("button");
+      button.className = "ol-tmdb-button";
+      button.type = "button";
+      button.setAttribute("aria-label", "滚动到顶部 / 底部");
+      const tip = document.createElement("span");
+      tip.className = "ol-tmdb-scroll-tip";
+      button.addEventListener("click", () => {
+        const scrollTop = document.documentElement.scrollTop || document.body.scrollTop;
+        if (scrollTop <= 0) {
+          window.scrollTo({ top: document.documentElement.scrollHeight, behavior: "smooth" });
+        } else {
+          window.scrollTo({ top: 0, behavior: "smooth" });
+        }
+      });
+      inner.appendChild(button);
+      inner.appendChild(tip);
+      wrap.appendChild(inner);
+      document.body.appendChild(wrap);
+    };
+
+    const updateScrollButton = () => {
+      createScrollButton();
+      const wrap = document.getElementById("ol-tmdb-scroll-wrap");
+      if (!wrap) return;
+      const button = wrap.querySelector(".ol-tmdb-button");
+      const tip = wrap.querySelector(".ol-tmdb-scroll-tip");
+      if (!button || !tip) return;
+      const scrollTop = document.documentElement.scrollTop || document.body.scrollTop;
+      const canScroll = document.documentElement.scrollHeight > window.innerHeight + 2;
+      if (!canScroll) {
+        wrap.style.display = "none";
+        return;
+      }
+      wrap.style.display = "";
+      const isUp = scrollTop > 0;
+      button.innerHTML = scrollButtonSvg(isUp);
+      tip.textContent = isUp ? "回到顶部" : "到底部";
+      button.setAttribute("aria-label", isUp ? "回到顶部" : "滚动到底部");
+    };
+
+    let scrollAnimationFrame = 0;
+    window.addEventListener("scroll", () => {
+      if (scrollAnimationFrame) window.cancelAnimationFrame(scrollAnimationFrame);
+      scrollAnimationFrame = window.requestAnimationFrame(() => {
+        updateScrollButton();
+        scrollAnimationFrame = 0;
+      });
+    }, { passive: true });
+
+    window.addEventListener("resize", updateScrollButton, { passive: true });
+    window.addEventListener(ROUTE_CHANGE_EVENT, () => window.setTimeout(updateScrollButton, 100));
+    window.addEventListener("popstate", () => window.setTimeout(updateScrollButton, 100));
+    window.addEventListener("hashchange", () => window.setTimeout(updateScrollButton, 100));
+    updateScrollButton();
   })();
