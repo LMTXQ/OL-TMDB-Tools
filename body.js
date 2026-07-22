@@ -3261,12 +3261,6 @@ ${studios}
       const tip = wrap.querySelector(".ol-tmdb-scroll-tip");
       if (!button || !tip) return;
       const scrollTop = document.documentElement.scrollTop || document.body.scrollTop;
-      const canScroll = document.documentElement.scrollHeight > window.innerHeight + 2;
-      if (!canScroll) {
-        wrap.style.display = "none";
-        return;
-      }
-      wrap.style.display = "";
       const isUp = scrollTop > 0;
       button.innerHTML = scrollButtonSvg(isUp);
       tip.textContent = isUp ? "回到顶部" : "到底部";
