@@ -9,12 +9,10 @@
       language: "openlist_tmdb_language",
       mode: "openlist_tmdb_mode",
       rename: "openlist_tmdb_rename",
-      nfo: "openlist_tmdb_nfo",
-      image: "openlist_tmdb_image",
-      overwrite: "openlist_tmdb_overwrite",
-      imageSize: "openlist_tmdb_image_size",
+      structuring: "openlist_tmdb_structuring",
       concurrency: "openlist_tmdb_concurrency",
     };
+    const DEFAULT_TMDB_API_KEY = document.currentScript?.dataset?.tmdbApiKey || "";
     const REQUEST_TIMEOUTS = {
       tmdb: 12_000,
       image: 30_000,
@@ -25,7 +23,6 @@
     const TMDB_MAX_RETRIES = 2;
     const TMDB_MAX_CONCURRENCY = 5;
     const TMDB_CONCURRENCY_OPTIONS = new Set([1, 3, 5]);
-    const TMDB_IMAGE_SIZES = new Set(["w780", "original"]);
     const savedTmdbConcurrency = Number(localStorage.getItem(STORAGE.concurrency));
     const initialTmdbConcurrency = TMDB_CONCURRENCY_OPTIONS.has(savedTmdbConcurrency)
       ? savedTmdbConcurrency
@@ -46,6 +43,15 @@
       "mpg",
       "mpeg",
     ]);
+    const SUBTITLE_EXTS = new Set([
+      "srt",
+      "ass",
+      "ssa",
+      "sub",
+      "vtt",
+      "sup",
+      "idx",
+    ]);
 
     const state = {
       entries: [],
@@ -61,7 +67,6 @@
       metadataReport: null,
       duplicateReport: null,
       executionReport: null,
-      retryWriteTargets: new Set(),
       compatibilityWarnings: [],
       mode: "movie",
       currentPath: "/",
@@ -163,6 +168,18 @@
     };
 
     const isVideo = (obj) => !obj.is_dir && VIDEO_EXTS.has(extname(obj.name));
+
+    const isSubtitle = (obj) => !obj.is_dir && SUBTITLE_EXTS.has(extname(obj.name));
+
+    const findSubtitleFilesFor = (videoName) => {
+      const videoBase = normalizeName(basename(videoName));
+      if (!videoBase) return [];
+      return state.entries.filter((entry) => {
+        if (entry.is_dir || !SUBTITLE_EXTS.has(extname(entry.name))) return false;
+        const subBase = normalizeName(basename(entry.name));
+        return subBase === videoBase || subBase.startsWith(`${videoBase}.`);
+      });
+    };
 
     const normalizeName = (name) => String(name || "").toLowerCase();
 
@@ -356,6 +373,46 @@
       return `${targetBaseName()}.${extname(file.name)}`;
     };
 
+    const structuringShowDir = () => {
+      if (!state.selectedItem) return "";
+      const title = safeFilePart(itemDisplayTitle(state.selectedItem));
+      const year = itemYear(state.selectedItem);
+      const dirName = year ? `${title} (${year})` : title;
+      return joinPath(state.currentPath, dirName);
+    };
+
+    const structuringTargetDir = () => {
+      const showDir = structuringShowDir();
+      if (!showDir) return "";
+      if (state.mode === "tv") {
+        const season = positiveNumber($(".ol-tmdb-season")?.value) || 1;
+        return joinPath(showDir, `Season ${String(season).padStart(2, "0")}`);
+      }
+      return showDir;
+    };
+
+    const structuringSeasonDir = (season) => {
+      const showDir = structuringShowDir();
+      if (!showDir) return "";
+      return joinPath(showDir, `Season ${String(season || 1).padStart(2, "0")}`);
+    };
+
+    const subtitleTargetName = (originalVideoName, targetVideoName, subtitleName) => {
+      const originalVideoBase = basename(originalVideoName);
+      const targetVideoBase = basename(targetVideoName);
+      const subExt = extname(subtitleName);
+      const subBase = basename(subtitleName);
+      const subBaseLower = normalizeName(subBase);
+      const videoBaseLower = normalizeName(originalVideoBase);
+      if (originalVideoBase === targetVideoBase) return subtitleName;
+      if (subBaseLower === videoBaseLower) return `${targetVideoBase}.${subExt}`;
+      if (subBaseLower.startsWith(`${videoBaseLower}.`)) {
+        const suffix = subBase.slice(originalVideoBase.length);
+        return `${targetVideoBase}${suffix}.${subExt}`;
+      }
+      return `${targetVideoBase}.${subExt}`;
+    };
+
     const selectedFile = () =>
       state.files.find((file) => file.name === state.selectedName) ||
       state.files.find((file) => file.name === state.selectedNames[0]);
@@ -398,24 +455,16 @@
     const operationCapabilities = () => {
       const permissionKnown = Number.isInteger(state.userPermission);
       const directoryWrite = state.write;
-      const rename = directoryWrite && (!permissionKnown || userCan(4));
-      const upload = directoryWrite && (
-        state.writeContentBypass || !permissionKnown || userCan(3)
-      );
+      const canWrite = directoryWrite && (!permissionKnown || userCan(4));
       return {
         permissionKnown,
         directoryWrite,
-        rename,
-        upload,
+        rename: canWrite,
+        structuring: canWrite,
         renameReason: !directoryWrite
           ? "当前目录不允许该用户写入"
           : permissionKnown && !userCan(4)
             ? "当前用户缺少 rename 权限"
-            : "",
-        uploadReason: !directoryWrite
-          ? "当前目录不允许该用户写入"
-          : permissionKnown && !state.writeContentBypass && !userCan(3)
-            ? "当前用户缺少 write_content 权限，目录也未启用绕过"
             : "",
       };
     };
@@ -424,15 +473,13 @@
       const capabilities = operationCapabilities();
       return {
         rename: capabilities.rename && Boolean($(".ol-tmdb-do-rename")?.checked),
-        nfo: capabilities.upload && Boolean($(".ol-tmdb-do-nfo")?.checked),
-        image: capabilities.upload && Boolean($(".ol-tmdb-do-image")?.checked),
-        overwrite: Boolean($(".ol-tmdb-overwrite")?.checked),
+        structuring: capabilities.structuring && Boolean($(".ol-tmdb-do-structuring")?.checked),
       };
     };
 
     const noAvailableActionMessage = () => {
       const capabilities = operationCapabilities();
-      return !capabilities.rename && !capabilities.upload
+      return !capabilities.rename && !capabilities.structuring
         ? "当前权限仅允许只读操作；仍可搜索、预览和检查元数据"
         : "请至少选择一个当前可用的操作";
     };
@@ -469,24 +516,31 @@
       return planStep(id, "rename", "视频", targetName, "rename", "改名");
     };
 
-    const writePlanStep = (id, type, label, name, enabled, overwrite, extra = {}) => {
-      if (!enabled) return planStep(id, type, label, name, "disabled", "未选择", extra);
-      if (extra.available === false) {
-        return planStep(id, type, label, name, "unavailable", extra.unavailableText || "TMDB 无可用资源", extra);
-      }
-      const existing = findEntry(name);
-      if (existing?.is_dir) {
-        return planStep(id, type, label, name, "conflict", "与目录冲突", extra);
-      }
-      if (existing) {
-        if (state.retryWriteTargets.has(`${state.currentPath}\n${normalizeName(name)}`)) {
-          return planStep(id, type, label, name, "retry", "上次失败，重试", extra);
+    const mkdirPlanStep = (id, dirPath, enabled) => {
+      if (!enabled) return planStep(id, "mkdir", "目录", dirPath, "disabled", "未选择");
+      if (!dirPath) return planStep(id, "mkdir", "目录", dirPath, "pending", "待生成路径");
+      const relativePath = dirPath.startsWith(state.currentPath + "/")
+        ? dirPath.slice(state.currentPath.length + 1)
+        : dirPath;
+      const components = relativePath.split("/").filter(Boolean);
+      const firstComponent = components[0];
+      if (firstComponent) {
+        const existing = findEntry(firstComponent);
+        if (existing && !existing.is_dir) {
+          return planStep(id, "mkdir", "目录", dirPath, "conflict", "与文件冲突");
         }
-        return overwrite
-          ? planStep(id, type, label, name, "overwrite", "覆盖", extra)
-          : planStep(id, type, label, name, "skip", "已存在，跳过", extra);
+        if (existing && existing.is_dir && components.length === 1) {
+          return planStep(id, "mkdir", "目录", dirPath, "skip", "已存在");
+        }
       }
-      return planStep(id, type, label, name, "new", "新建", extra);
+      return planStep(id, "mkdir", "目录", dirPath, "new", "创建");
+    };
+
+    const movePlanStep = (id, fileName, targetDir, enabled) => {
+      if (!enabled) return planStep(id, "move", "移动", fileName, "disabled", "未选择");
+      if (!fileName) return planStep(id, "move", "移动", fileName, "pending", "待生成目标");
+      if (!targetDir) return planStep(id, "move", "移动", fileName, "pending", "待生成目录");
+      return planStep(id, "move", "移动", fileName, "new", "移动", { targetDir });
     };
 
     const conflictingPlanStep = (step, text = "目标重复") => ({
@@ -527,30 +581,17 @@
     const renderPlanSummary = (plan) => `
       <div class="ol-tmdb-plan-summary" data-kind="${plan.counts.conflict ? "error" : plan.counts.overwrite ? "warn" : ""}">
         <strong>执行计划</strong>
-        <span>新建 / 改名 ${plan.counts.create}</span>
+        <span>新建 / 改名 / 移动 ${plan.counts.create}</span>
         <span>覆盖 ${plan.counts.overwrite}</span>
         <span>跳过 / 不变 ${plan.counts.skip}</span>
         <span>冲突 ${plan.counts.conflict}</span>
       </div>`;
-
-    const retryWriteKey = (name) => `${state.currentPath}\n${normalizeName(name)}`;
-
-    const markWriteTargetForRetry = (step) => {
-      if (step?.name && ["nfo", "image", "poster"].includes(step.type)) {
-        state.retryWriteTargets.add(retryWriteKey(step.name));
-      }
-    };
-
-    const clearWriteTargetRetry = (step) => {
-      if (step?.name) state.retryWriteTargets.delete(retryWriteKey(step.name));
-    };
 
     const beginExecutionReport = (plan) => {
       const sourceByStep = new Map();
       plan.rows.forEach((rowPlan) => {
         rowPlan.steps.forEach((step) => sourceByStep.set(step.id, rowPlan.sourceName));
       });
-      if (plan.posterStep) sourceByStep.set(plan.posterStep.id, state.currentPath);
       const report = {
         startedAt: new Date(),
         entries: plan.steps
@@ -636,8 +677,7 @@
     const setOperationSelection = (types) => {
       const mappings = [
         ["rename", ".ol-tmdb-do-rename", STORAGE.rename],
-        ["nfo", ".ol-tmdb-do-nfo", STORAGE.nfo],
-        ["image", ".ol-tmdb-do-image", STORAGE.image],
+        ["structuring", ".ol-tmdb-do-structuring", STORAGE.structuring],
       ];
       mappings.forEach(([type, selector, storageKey]) => {
         const input = $(selector);
@@ -656,18 +696,15 @@
       const types = new Set();
       failedEntries.forEach((entry) => {
         if (entry.type === "rename") types.add("rename");
-        if (entry.type === "nfo") types.add("nfo");
-        if (entry.type === "image" || entry.type === "poster") types.add("image");
+        if (entry.type === "mkdir" || entry.type === "move") types.add("structuring");
       });
       if (!types.size) {
         setStatus("报告中没有可恢复的失败或未执行写入步骤", "error");
         return;
       }
       setOperationSelection(types);
-      const labels = [types.has("rename") && "改名", types.has("nfo") && "NFO", types.has("image") && "图片"]
-        .filter(Boolean)
-        .join("、");
-      setStatus(`已仅选择失败 / 未执行步骤类型：${labels}；请核对执行计划后再次执行`, "ok");
+      const labels = [...types].map((type) => type === "rename" ? "改名" : "结构化");
+      setStatus(`已仅选择失败 / 未执行步骤类型：${labels.join("、")}；请核对执行计划后再次执行`, "ok");
     };
 
     function renderExecutionReport() {
@@ -707,15 +744,13 @@
       if (!node) return;
       const capabilities = operationCapabilities();
       const permissionNote = capabilities.permissionKnown
-        ? state.writeContentBypass
-          ? "目录允许绕过用户的 write_content 权限"
-          : "已读取当前用户权限"
+        ? "已读取当前用户权限"
         : "未能确认用户权限，操作将由服务端最终判断";
-      node.dataset.kind = capabilities.rename || capabilities.upload ? "" : "readonly";
+      node.dataset.kind = capabilities.rename ? "" : "readonly";
       node.innerHTML = `
-        <strong>${capabilities.rename || capabilities.upload ? "可用写入能力" : "只读模式"}</strong>
+        <strong>${capabilities.rename ? "可用写入能力" : "只读模式"}</strong>
         <span data-allowed="${capabilities.rename}">改名：${capabilities.rename ? "可用" : escapeHtml(capabilities.renameReason)}</span>
-        <span data-allowed="${capabilities.upload}">NFO / 图片：${capabilities.upload ? "可用" : escapeHtml(capabilities.uploadReason)}</span>
+        <span data-allowed="${capabilities.structuring}">目录结构化：${capabilities.structuring ? "可用" : escapeHtml(capabilities.renameReason)}</span>
         <small>${escapeHtml(permissionNote)}；TMDB 搜索、预览和元数据检查始终可用。</small>
       `;
     }
@@ -733,20 +768,12 @@
         }
       };
       update(".ol-tmdb-do-rename", capabilities.rename, capabilities.renameReason);
-      update(".ol-tmdb-do-nfo", capabilities.upload, capabilities.uploadReason);
-      update(".ol-tmdb-do-image", capabilities.upload, capabilities.uploadReason);
-      update(".ol-tmdb-overwrite", capabilities.upload, capabilities.uploadReason);
-      const imageSize = $(".ol-tmdb-image-size");
-      if (imageSize) imageSize.disabled = state.loading || !capabilities.upload;
+      update(".ol-tmdb-do-structuring", capabilities.structuring, capabilities.renameReason);
       document.querySelectorAll("[data-only-operation]").forEach((button) => {
-        const type = button.dataset.onlyOperation;
-        const allowed = type === "rename" ? capabilities.rename : capabilities.upload;
+        const operation = button.dataset.onlyOperation;
+        const allowed = operation === "rename" ? capabilities.rename : capabilities.structuring;
         button.disabled = state.loading || !allowed;
-        button.title = allowed
-          ? ""
-          : type === "rename"
-            ? capabilities.renameReason
-            : capabilities.uploadReason;
+        button.title = allowed ? "" : capabilities.renameReason;
       });
       document.querySelectorAll(".ol-tmdb-cleanup-execute").forEach((button) => {
         button.disabled = state.loading || !capabilities.rename;
@@ -950,25 +977,23 @@
         }),
       });
 
-    const putFile = async (path, content, contentType = "application/xml;charset=utf-8") => {
-      try {
-        return await openListRequest("/fs/put", {
-          method: "PUT",
-          timeoutMs: REQUEST_TIMEOUTS.openListWrite,
-          requestLabel: "OpenList 写入",
-          headers: {
-            "Content-Type": contentType,
-            "File-Path": encodeURIComponent(path),
-            Overwrite: "true",
-          },
-          body: content,
-        });
-      } catch (error) {
-        const uploadError = new Error(`OpenList 上传失败：${error.message}`);
-        uploadError.cause = error;
-        throw uploadError;
-      }
-    };
+    const makeDir = async (path) =>
+      openListRequest("/fs/mkdir", {
+        method: "POST",
+        timeoutMs: REQUEST_TIMEOUTS.openListWrite,
+        requestLabel: "OpenList 创建目录",
+        headers: { "Content-Type": "application/json;charset=utf-8" },
+        body: JSON.stringify({ path }),
+      });
+
+    const moveFiles = async (srcDir, dstDir, names) =>
+      openListRequest("/fs/move", {
+        method: "POST",
+        timeoutMs: REQUEST_TIMEOUTS.openListWrite,
+        requestLabel: "OpenList 移动文件",
+        headers: { "Content-Type": "application/json;charset=utf-8" },
+        body: JSON.stringify({ src_dir: srcDir, dst_dir: dstDir, names }),
+      });
 
     const noteTmdbRateLimit = () => {
       state.tmdbRateLimited = true;
@@ -979,9 +1004,10 @@
       state.tmdbRateLimited ? `（TMDB 限流，后续并发已降至 ${state.tmdbConcurrency}）` : "";
 
     const tmdbRequest = async (path, params = {}) => {
-      const key = $(".ol-tmdb-api-key")?.value.trim();
+      const inputKey = $(".ol-tmdb-api-key")?.value.trim();
+      const key = inputKey || DEFAULT_TMDB_API_KEY;
       if (!key) throw new Error("请先填写 TMDB API Key");
-      localStorage.setItem(STORAGE.key, key);
+      if (inputKey) localStorage.setItem(STORAGE.key, inputKey);
       const url = new URL(`https://api.themoviedb.org/3${path}`);
       url.searchParams.set("language", $(".ol-tmdb-language")?.value || "zh-CN");
       Object.entries(params).forEach(([name, value]) => {
@@ -1083,115 +1109,6 @@
 
     const buildImageUrl = (path, size = "w185") =>
       path ? `https://image.tmdb.org/t/p/${size}${path}` : "";
-
-    const selectedImageSize = () => {
-      const size = $(".ol-tmdb-image-size")?.value || localStorage.getItem(STORAGE.imageSize);
-      return TMDB_IMAGE_SIZES.has(size) ? size : "w780";
-    };
-
-    const fetchTmdbImage = async (imagePath, label) => {
-      if (!imagePath) throw new Error(`${label}缺少图片`);
-      const { response, body } = await fetchWithPolicy(
-        buildImageUrl(imagePath, selectedImageSize()),
-        {},
-        {
-          timeoutMs: REQUEST_TIMEOUTS.image,
-          label: "TMDB 图片域名",
-          maxRetries: TMDB_MAX_RETRIES,
-          retryStatuses: TMDB_RETRY_STATUSES,
-          retryNetwork: true,
-          consume: async (result) => {
-            const contentType = (result.headers.get("content-type") || "").toLowerCase();
-            if (result.ok && !contentType.startsWith("image/")) {
-              throw new Error(
-                `${label}响应类型无效：${contentType || "缺少 Content-Type"}，已阻止上传`,
-              );
-            }
-            return result.ok
-              ? { blob: await result.blob(), contentType }
-              : { text: await result.text(), contentType };
-          },
-        },
-      );
-      if (!response.ok) throw new Error(`${label}下载失败：HTTP ${response.status}`);
-      return body;
-    };
-
-    const uploadPreparedImage = async (targetPath, image, label) => {
-      if (!image?.blob) throw new Error(`${label}尚未准备完成`);
-      await putFile(targetPath, image.blob, image.contentType);
-    };
-
-    const preparePlanImages = async (plan) => {
-      const steps = plan.steps.filter((step) =>
-        (step.type === "image" || step.type === "poster") && step.run,
-      );
-      const prepared = new Map();
-      for (let index = 0; index < steps.length; index += 1) {
-        const step = steps[index];
-        setStatus(`正在预取图片 (${index + 1}/${steps.length})：${step.label}`);
-        try {
-          prepared.set(step.id, await fetchTmdbImage(step.imagePath, step.label));
-        } catch (error) {
-          error.planStep = step;
-          throw error;
-        }
-      }
-      return prepared;
-    };
-
-    const buildMovieNfo = (movie) => {
-      const genres = (movie.genres || [])
-        .map((genre) => `  <genre>${escapeXml(genre.name)}</genre>`)
-        .join("\n");
-      const studios = (movie.production_companies || [])
-        .map((studio) => `  <studio>${escapeXml(studio.name)}</studio>`)
-        .join("\n");
-      const thumb = buildImageUrl(movie.poster_path, "original");
-      const fanart = buildImageUrl(movie.backdrop_path, "original");
-      return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<movie>
-  <title>${escapeXml(movie.title)}</title>
-  <originaltitle>${escapeXml(movie.original_title)}</originaltitle>
-  <year>${escapeXml(itemYear(movie))}</year>
-  <plot>${escapeXml(movie.overview)}</plot>
-  <runtime>${escapeXml(movie.runtime || "")}</runtime>
-  <tmdbid>${escapeXml(movie.id)}</tmdbid>
-  <uniqueid type="tmdb" default="true">${escapeXml(movie.id)}</uniqueid>
-  <premiered>${escapeXml(movie.release_date)}</premiered>
-  <rating>${escapeXml(movie.vote_average)}</rating>
-${genres}
-${studios}
-  <thumb>${escapeXml(thumb)}</thumb>
-  <fanart>${escapeXml(fanart)}</fanart>
-</movie>
-`;
-    };
-
-    const buildEpisodeNfo = (show, episode, seasonOverride = "", episodeOverride = "") => {
-      const seasonNumber = positiveNumber(seasonOverride) ||
-        positiveNumber($(".ol-tmdb-season")?.value) ||
-        positiveNumber(episode.season_number) ||
-        1;
-      const episodeNumber = positiveNumber(episodeOverride) ||
-        positiveNumber($(".ol-tmdb-episode")?.value) ||
-        positiveNumber(episode.episode_number);
-      const thumb = buildImageUrl(episode.still_path, "original");
-      return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<episodedetails>
-  <title>${escapeXml(episode.name)}</title>
-  <showtitle>${escapeXml(itemDisplayTitle(show))}</showtitle>
-  <season>${escapeXml(seasonNumber)}</season>
-  <episode>${escapeXml(episodeNumber)}</episode>
-  <plot>${escapeXml(episode.overview)}</plot>
-  <aired>${escapeXml(episode.air_date)}</aired>
-  <rating>${escapeXml(episode.vote_average)}</rating>
-  <tmdbid>${escapeXml(episode.id)}</tmdbid>
-  <uniqueid type="tmdb" default="true">${escapeXml(episode.id)}</uniqueid>
-  <thumb>${escapeXml(thumb)}</thumb>
-</episodedetails>
-`;
-    };
 
     const syncTvBatchRows = () => {
       if (state.mode !== "tv") {
@@ -1331,13 +1248,11 @@ ${studios}
       const season = positiveNumber(row.season);
       const episode = positiveNumber(row.episode);
       if (!file || !state.selectedItem || !season || !episode) {
-        return { videoName: "", nfoName: "" };
+        return { videoName: "" };
       }
       const base = tvEpisodeBaseName(state.selectedItem, row.episodeDetails, season, episode);
       return {
         videoName: `${base}.${extname(file.name)}`,
-        nfoName: `${base}.nfo`,
-        imageName: `${base}.jpg`,
       };
     };
 
@@ -1347,41 +1262,14 @@ ${studios}
         return finalizeExecutionPlan({ options, rows: [], steps: [] });
       }
       const finalVideoName = options.rename ? targetVideoName() : file.name;
-      const finalBaseName = basename(finalVideoName);
-      const target = {
-        videoName: finalVideoName,
-        nfoName: `${finalBaseName}.nfo`,
-        imageName: state.mode === "tv" ? `${finalBaseName}.jpg` : `${finalBaseName}-poster.jpg`,
-        posterName: state.mode === "tv" ? "poster.jpg" : "",
-      };
-      const stillPath = state.mode === "tv" ? state.selectedEpisode?.still_path : state.selectedItem.poster_path;
+      const target = { videoName: finalVideoName };
       const steps = [
         renamePlanStep("single:rename", file.name, target.videoName, options.rename),
-        writePlanStep("single:nfo", "nfo", "NFO", target.nfoName, options.nfo, options.overwrite),
-        writePlanStep(
-          "single:image",
-          "image",
-          state.mode === "tv" ? "单集缩略图" : "电影封面",
-          target.imageName,
-          options.image,
-          options.overwrite,
-          { available: Boolean(stillPath), imagePath: stillPath, unavailableText: "TMDB 无图片" },
-        ),
       ];
-      if (state.mode === "tv") {
-        steps.push(writePlanStep(
-          "single:poster",
-          "poster",
-          "目录海报",
-          target.posterName,
-          options.image,
-          options.overwrite,
-          {
-            available: Boolean(state.selectedItem.poster_path),
-            imagePath: state.selectedItem.poster_path,
-            unavailableText: "TMDB 无海报",
-          },
-        ));
+      if (options.structuring) {
+        const targetDir = structuringTargetDir();
+        steps.push(mkdirPlanStep("single:mkdir", targetDir, true));
+        steps.push(movePlanStep("single:move", target.videoName, targetDir, true));
       }
       return finalizeExecutionPlan({
         options,
@@ -1391,6 +1279,7 @@ ${studios}
     };
 
     const buildBatchExecutionPlan = (options = actionOptions()) => {
+      const mkdirDirs = new Set();
       const rowPlans = state.tvBatchRows.map((row, index) => {
         const file = state.files.find((item) => item.name === row.name);
         const matchedTarget = batchRowTarget(row);
@@ -1406,29 +1295,19 @@ ${studios}
           return { row, file, sourceName: row.name, target: matchedTarget, steps: [validation] };
         }
         const finalVideoName = options.rename ? matchedTarget.videoName : row.name;
-        const finalBaseName = basename(finalVideoName);
-        const target = {
-          videoName: finalVideoName,
-          nfoName: `${finalBaseName}.nfo`,
-          imageName: `${finalBaseName}.jpg`,
-        };
+        const target = { videoName: finalVideoName };
         const steps = [
           renamePlanStep(`batch:${index}:rename`, row.name, target.videoName, options.rename),
-          writePlanStep(`batch:${index}:nfo`, "nfo", "NFO", target.nfoName, options.nfo, options.overwrite),
-          writePlanStep(
-            `batch:${index}:image`,
-            "image",
-            "单集缩略图",
-            target.imageName,
-            options.image,
-            options.overwrite,
-            {
-              available: Boolean(row.episodeDetails.still_path),
-              imagePath: row.episodeDetails.still_path,
-              unavailableText: "TMDB 无图片",
-            },
-          ),
         ];
+        if (options.structuring) {
+          const season = positiveNumber(row.season) || 1;
+          const seasonDir = structuringSeasonDir(season);
+          if (!mkdirDirs.has(seasonDir)) {
+            mkdirDirs.add(seasonDir);
+            steps.push(mkdirPlanStep(`batch:${index}:mkdir`, seasonDir, true));
+          }
+          steps.push(movePlanStep(`batch:${index}:move`, target.videoName, seasonDir, true));
+        }
         return { row, file, sourceName: row.name, target, steps };
       });
 
@@ -1458,7 +1337,7 @@ ${studios}
       rowPlans.forEach((rowPlan) => {
         if (rowPlan.steps.some((step) => step.type === "validation" && step.blocking)) return;
         rowPlan.steps.forEach((step, index) => {
-          if (!["rename", "nfo", "image"].includes(step.type) || !step.name) return;
+          if (!["rename"].includes(step.type) || !step.name) return;
           if (["disabled", "unavailable", "pending"].includes(step.status)) return;
           const key = `${step.type}:${normalizeName(step.name)}`;
           const group = targetGroups.get(key) || [];
@@ -1473,21 +1352,8 @@ ${studios}
         });
       });
 
-      const posterStep = writePlanStep(
-        "batch:poster",
-        "poster",
-        "目录海报",
-        "poster.jpg",
-        options.image,
-        options.overwrite,
-        {
-          available: Boolean(state.selectedItem?.poster_path),
-          imagePath: state.selectedItem?.poster_path,
-          unavailableText: "TMDB 无海报",
-        },
-      );
-      const steps = [...rowPlans.flatMap((rowPlan) => rowPlan.steps), posterStep];
-      return finalizeExecutionPlan({ options, rows: rowPlans, posterStep, steps });
+      const steps = rowPlans.flatMap((rowPlan) => rowPlan.steps);
+      return finalizeExecutionPlan({ options, rows: rowPlans, steps });
     };
 
     const buildCleanupExecutionPlan = () => {
@@ -1518,7 +1384,7 @@ ${studios}
         });
       });
       return finalizeExecutionPlan({
-        options: { rename: true, nfo: false, image: false },
+        options: { rename: true, structuring: false },
         rows: rowPlans,
         steps: rowPlans.flatMap((rowPlan) => rowPlan.steps),
       });
@@ -1949,13 +1815,19 @@ ${studios}
           const selected = state.selectedItem?.id === item.id;
           const poster = buildImageUrl(item.poster_path, "w154");
           const original = state.mode === "tv" ? item.original_name : item.original_title;
+          const tmdbUrl = `https://www.themoviedb.org/${state.mode === "tv" ? "tv" : "movie"}/${item.id}`;
           return `<div class="ol-tmdb-result" role="button" tabindex="0" data-id="${item.id}" data-selected="${selected}">
             ${poster ? `<img class="ol-tmdb-poster" alt="" src="${escapeHtml(poster)}">` : '<div class="ol-tmdb-poster"></div>'}
             <div>
               <div class="ol-tmdb-name" title="${escapeHtml(title)}">${escapeHtml(title)}</div>
               <div class="ol-tmdb-meta">${escapeHtml(year || "未知年份")} · ${escapeHtml((original || "").slice(0, 80))}</div>
             </div>
-            <button class="ol-tmdb-action" type="button" data-id="${item.id}">选择</button>
+            <div class="ol-tmdb-result-actions">
+              <a class="ol-tmdb-result-link" href="${escapeHtml(tmdbUrl)}" target="_blank" rel="noopener noreferrer" title="在 TMDB 打开" aria-label="在 TMDB 打开">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
+              </a>
+              <button class="ol-tmdb-action" type="button" data-id="${item.id}">选择</button>
+            </div>
           </div>`;
         })
         .join("");
@@ -1964,6 +1836,9 @@ ${studios}
         row.addEventListener("keydown", (event) => {
           if (event.key === "Enter" || event.key === " ") selectItem(Number(row.dataset.id));
         });
+      });
+      list.querySelectorAll(".ol-tmdb-result-link").forEach((link) => {
+        link.addEventListener("click", (event) => event.stopPropagation());
       });
     };
 
@@ -1993,7 +1868,6 @@ ${studios}
           <button class="ol-tmdb-action ol-tmdb-update-batch" type="button">更新逐集预览</button>
         </div>
         ${renderPlanSummary(plan)}
-        <div class="ol-tmdb-plan ol-tmdb-plan-global">${renderPlanStep(plan.posterStep)}</div>
         <div class="ol-tmdb-batch-table">
           <div class="ol-tmdb-batch-head">
             <span>原文件</span>
@@ -2020,7 +1894,7 @@ ${studios}
               <input class="ol-tmdb-input ol-tmdb-batch-input" data-name="${escapeHtml(row.name)}" data-field="episode" type="text" inputmode="numeric" value="${escapeHtml(row.episode)}">
               <span>${escapeHtml(row.episodeDetails?.name || "")}</span>
               <span class="ol-tmdb-batch-target">
-                ${target.videoName ? `${escapeHtml(target.videoName)}<br><span class="ol-tmdb-meta">${escapeHtml(target.nfoName)} · ${escapeHtml(target.imageName)}</span>` : "待填写"}
+                ${target.videoName ? escapeHtml(target.videoName) : "待填写"}
                 ${rowPlan ? `<span class="ol-tmdb-plan">${rowPlan.steps.map(renderPlanStep).join("")}</span>` : ""}
               </span>
               <span class="ol-tmdb-batch-status">${escapeHtml(displayStatus.text)}</span>
@@ -2062,13 +1936,14 @@ ${studios}
       }
       const plan = buildSingleExecutionPlan();
       const rowPlan = plan.rows[0];
-      const { videoName, nfoName, imageName, posterName } = rowPlan.target;
+      const { videoName } = rowPlan.target;
+      const structuringEnabled = Boolean($(".ol-tmdb-do-structuring")?.checked);
+      const targetDir = structuringEnabled ? structuringTargetDir() : "";
       preview.innerHTML = `
         ${renderPlanSummary(plan)}
         <div><strong>原文件</strong> <span class="ol-tmdb-code">${escapeHtml(file.name)}</span></div>
         <div><strong>新文件</strong> <span class="ol-tmdb-code">${escapeHtml(videoName)}</span></div>
-        <div><strong>NFO</strong> <span class="ol-tmdb-code">${escapeHtml(nfoName)}</span></div>
-        <div><strong>图片</strong> <span class="ol-tmdb-code">${escapeHtml(posterName ? `${imageName} / ${posterName}` : imageName)}</span></div>
+        ${targetDir ? `<div><strong>目标目录</strong> <span class="ol-tmdb-code">${escapeHtml(targetDir)}</span></div>` : ""}
         <div class="ol-tmdb-plan">${rowPlan.steps.map(renderPlanStep).join("")}</div>
       `;
     };
@@ -2212,13 +2087,10 @@ ${studios}
       state.metadataReport = null;
       render();
       const capabilities = operationCapabilities();
-      if (!capabilities.rename && !capabilities.upload) {
+      if (!capabilities.rename) {
         setStatus(`已以只读模式载入 ${state.files.length} 个视频文件；仍可搜索、预览和检查元数据`);
       } else {
-        const available = [capabilities.rename && "改名", capabilities.upload && "NFO / 图片"]
-          .filter(Boolean)
-          .join("、");
-        setStatus(`已载入 ${state.files.length} 个视频文件；可用写入能力：${available}`);
+        setStatus(`已载入 ${state.files.length} 个视频文件；可用写入能力：改名、目录结构化`);
       }
       return true;
     };
@@ -2430,7 +2302,7 @@ ${studios}
         return;
       }
       const options = actionOptions();
-      if (!options.rename && !options.nfo && !options.image) {
+      if (!options.rename && !options.structuring) {
         setStatus(noAvailableActionMessage(), "error");
         return;
       }
@@ -2449,8 +2321,7 @@ ${studios}
       let activeSteps = [];
       try {
         localStorage.setItem(STORAGE.rename, options.rename ? "true" : "false");
-        localStorage.setItem(STORAGE.nfo, options.nfo ? "true" : "false");
-        localStorage.setItem(STORAGE.image, options.image ? "true" : "false");
+        localStorage.setItem(STORAGE.structuring, options.structuring ? "true" : "false");
         await fetchTvBatchEpisodes();
         const plan = buildBatchExecutionPlan(options);
         render();
@@ -2465,8 +2336,8 @@ ${studios}
         }
 
         report = beginExecutionReport(plan);
-        const preparedImages = await preparePlanImages(plan);
 
+        let success = 0;
         if (options.rename) {
           const renamePlans = plan.rows.flatMap((rowPlan) => {
             const step = rowPlan.steps.find((item) => item.type === "rename");
@@ -2488,88 +2359,79 @@ ${studios}
           }
         }
 
-        let posterError = "";
-        if (plan.posterStep.run) {
-          try {
-            setStatus("正在上传电视剧目录封面...");
-            activeSteps = [plan.posterStep];
-            await uploadPreparedImage(
-              joinPath(state.currentPath, plan.posterStep.name),
-              preparedImages.get(plan.posterStep.id),
-              "电视剧目录封面",
-            );
-            clearWriteTargetRetry(plan.posterStep);
-            updateExecutionReport(report, plan.posterStep, "success");
-            activeSteps = [];
-          } catch (error) {
-            posterError = error.message;
-            markWriteTargetForRetry(plan.posterStep);
-            updateExecutionReport(report, plan.posterStep, "failed", error.message);
+        if (options.structuring) {
+          if (options.rename) {
+            const subRenameObjects = [];
+            plan.rows.forEach((rowPlan) => {
+              if (!rowPlan.row._renamed || rowPlan.row._renamed === rowPlan.sourceName) return;
+              const subtitles = findSubtitleFilesFor(rowPlan.sourceName);
+              subtitles.forEach((sub) => {
+                const subTarget = subtitleTargetName(rowPlan.sourceName, rowPlan.row._renamed, sub.name);
+                if (subTarget !== sub.name) {
+                  subRenameObjects.push({ src_name: sub.name, new_name: subTarget });
+                }
+              });
+            });
+            if (subRenameObjects.length) {
+              setStatus(`正在改名 ${subRenameObjects.length} 个字幕文件...`);
+              await batchRename(state.currentPath, subRenameObjects);
+            }
+          }
+
+          const mkdirSteps = plan.steps.filter((step) => step.type === "mkdir" && step.run);
+          if (mkdirSteps.length) {
+            setStatus(`正在创建 ${mkdirSteps.length} 个目录...`);
+            activeSteps = mkdirSteps;
+            for (const step of mkdirSteps) {
+              await makeDir(step.name);
+            }
+            activeSteps.forEach((step) => updateExecutionReport(report, step, "success"));
             activeSteps = [];
           }
+
+          const moveGroups = new Map();
+          plan.rows.forEach((rowPlan) => {
+            if (rowPlan.row.error) return;
+            const season = positiveNumber(rowPlan.row.season) || 1;
+            const seasonDir = structuringSeasonDir(season);
+            const moveName = rowPlan.row._renamed || rowPlan.sourceName;
+            const group = moveGroups.get(seasonDir) || [];
+            group.push(moveName);
+            const subtitles = findSubtitleFilesFor(rowPlan.sourceName);
+            subtitles.forEach((sub) => {
+              const subMoveName = options.rename
+                ? subtitleTargetName(rowPlan.sourceName, rowPlan.row._renamed || rowPlan.sourceName, sub.name)
+                : sub.name;
+              group.push(subMoveName);
+            });
+            moveGroups.set(seasonDir, group);
+          });
+
+          const moveSteps = plan.steps.filter((step) => step.type === "move" && step.run);
+          activeSteps = moveSteps;
+          for (const [targetDir, names] of moveGroups) {
+            setStatus(`正在移动 ${names.length} 个文件...`);
+            await moveFiles(state.currentPath, targetDir, names);
+          }
+          activeSteps.forEach((step) => updateExecutionReport(report, step, "success"));
+          activeSteps = [];
         }
 
-        let success = 0;
-        for (let index = 0; index < plan.rows.length; index += 1) {
-          const rowPlan = plan.rows[index];
+        plan.rows.forEach((rowPlan) => {
           const row = rowPlan.row;
-          const target = rowPlan.target;
-          setStatus(`正在处理 ${index + 1}/${plan.rows.length}: ${rowPlan.sourceName}`);
-          try {
-            const messages = [];
-            if (row._renamed) {
-              messages.push(row._renamed === rowPlan.sourceName ? "文件名无需变更" : "改名完成");
-              row.name = row._renamed;
-            }
-            const nfoStep = rowPlan.steps.find((step) => step.type === "nfo");
-            if (nfoStep?.run) {
-              activeSteps = [nfoStep];
-              const nfo = buildEpisodeNfo(state.selectedItem, row.episodeDetails, row.season, row.episode);
-              await putFile(joinPath(state.currentPath, target.nfoName), nfo);
-              clearWriteTargetRetry(nfoStep);
-              updateExecutionReport(report, nfoStep, "success");
-              activeSteps = [];
-              messages.push("NFO 上传完成");
-            } else if (nfoStep?.status === "skip") {
-              messages.push("NFO 已存在，已跳过");
-            }
-            const imageStep = rowPlan.steps.find((step) => step.type === "image");
-            if (imageStep?.run) {
-              activeSteps = [imageStep];
-              await uploadPreparedImage(
-                joinPath(state.currentPath, target.imageName),
-                preparedImages.get(imageStep.id),
-                "剧集缩略图",
-              );
-              clearWriteTargetRetry(imageStep);
-              updateExecutionReport(report, imageStep, "success");
-              activeSteps = [];
-              messages.push("缩略图上传完成");
-            } else if (imageStep?.status === "skip") {
-              messages.push("缩略图已存在，已跳过");
-            } else if (imageStep?.status === "unavailable") {
-              messages.push("无剧集缩略图");
-            }
-            row.result = messages.join("，") || "完成";
-            success += 1;
-          } catch (error) {
-            row.error = error.message;
-            activeSteps.forEach((step) => {
-              markWriteTargetForRetry(step);
-              updateExecutionReport(report, step, "failed", error.message);
-            });
-            activeSteps = [];
+          if (row._renamed) {
+            row.result = row._renamed === rowPlan.sourceName ? "文件名无需变更" : "改名完成";
+            row.name = row._renamed;
+          } else {
+            row.result = "完成";
           }
-        }
+          success += 1;
+        });
 
         const failedRows = state.tvBatchRows.filter((row) => row.error);
         const failedNames = failedRows.map((row) => row.name);
         const finalFailed = failedNames.length;
-        const retainedNames = finalFailed
-          ? failedNames
-          : posterError
-            ? state.tvBatchRows.map((row) => row.name)
-            : [];
+        const retainedNames = finalFailed ? failedNames : [];
         const reportSummary = finishExecutionReport(report);
         state.selectedNames = retainedNames;
         state.selectedName = retainedNames[0] || "";
@@ -2594,10 +2456,8 @@ ${studios}
         setStatus(
           finalFailed
             ? `批量完成 ${success} 集，失败 ${finalFailed} 集；步骤成功 ${reportSummary.success}，跳过 ${reportSummary.skipped}`
-            : posterError
-              ? `批量完成 ${success} 集，目录海报失败：${posterError}；步骤成功 ${reportSummary.success}`
-              : `批量完成 ${success} 集；步骤成功 ${reportSummary.success}，跳过 ${reportSummary.skipped}，覆盖 ${reportSummary.overwrite}`,
-          finalFailed || posterError ? "error" : "ok",
+            : `批量完成 ${success} 集；步骤成功 ${reportSummary.success}，跳过 ${reportSummary.skipped}`,
+          finalFailed ? "error" : "ok",
         );
       } catch (error) {
         const failedSteps = error.planStep ? [error.planStep] : activeSteps;
@@ -2629,7 +2489,7 @@ ${studios}
         return;
       }
       const options = actionOptions();
-      if (!options.rename && !options.nfo && !options.image) {
+      if (!options.rename && !options.structuring) {
         setStatus(noAvailableActionMessage(), "error");
         return;
       }
@@ -2638,7 +2498,7 @@ ${studios}
       const plan = buildSingleExecutionPlan(options);
       const rowPlan = plan.rows[0];
       const oldName = rowPlan.sourceName;
-      const { videoName: newVideoName, nfoName, imageName, posterName } = rowPlan.target;
+      const { videoName: newVideoName } = rowPlan.target;
       const messages = [];
       const nextName = chooseNextFileName(oldName, newVideoName);
       let actualName = oldName;
@@ -2646,8 +2506,7 @@ ${studios}
       let activeStep = null;
       try {
         localStorage.setItem(STORAGE.rename, options.rename ? "true" : "false");
-        localStorage.setItem(STORAGE.nfo, options.nfo ? "true" : "false");
-        localStorage.setItem(STORAGE.image, options.image ? "true" : "false");
+        localStorage.setItem(STORAGE.structuring, options.structuring ? "true" : "false");
         render();
         if (plan.blocking.length) {
           setStatus(`执行计划存在 ${plan.blocking.length} 个冲突，请先处理`, "error");
@@ -2655,7 +2514,6 @@ ${studios}
         }
 
         report = beginExecutionReport(plan);
-        const preparedImages = await preparePlanImages(plan);
         const renameStep = rowPlan.steps.find((step) => step.type === "rename");
         if (renameStep?.run) {
           setStatus("正在改名...");
@@ -2669,66 +2527,53 @@ ${studios}
           messages.push("文件名无需变更");
         }
 
-        const nfoStep = rowPlan.steps.find((step) => step.type === "nfo");
-        if (nfoStep?.run) {
-          setStatus("正在上传 NFO...");
-          activeStep = nfoStep;
-          const nfoPath = joinPath(state.currentPath, nfoName);
-          const nfo = state.mode === "tv"
-            ? buildEpisodeNfo(state.selectedItem, state.selectedEpisode || {
-                id: state.selectedItem.id,
-                name: "",
-                overview: "",
-                air_date: "",
-                vote_average: "",
-              })
-            : buildMovieNfo(state.selectedItem);
-          await putFile(nfoPath, nfo);
-          clearWriteTargetRetry(nfoStep);
-          updateExecutionReport(report, nfoStep, "success");
-          activeStep = null;
-          messages.push("NFO 上传完成");
-        } else if (nfoStep?.status === "skip") {
-          messages.push("NFO 已存在，已跳过");
+        if (options.structuring) {
+          const targetDir = structuringTargetDir();
+          if (options.rename && renameStep?.run) {
+            const subtitles = findSubtitleFilesFor(oldName);
+            const subRenameObjects = [];
+            subtitles.forEach((sub) => {
+              const subTarget = subtitleTargetName(oldName, newVideoName, sub.name);
+              if (subTarget !== sub.name) {
+                subRenameObjects.push({ src_name: sub.name, new_name: subTarget });
+              }
+            });
+            if (subRenameObjects.length) {
+              setStatus(`正在改名 ${subRenameObjects.length} 个字幕文件...`);
+              await batchRename(state.currentPath, subRenameObjects);
+              messages.push(`字幕改名 ${subRenameObjects.length} 个`);
+            }
+          }
+
+          const mkdirStep = rowPlan.steps.find((step) => step.type === "mkdir");
+          if (mkdirStep?.run) {
+            setStatus("正在创建目录...");
+            activeStep = mkdirStep;
+            await makeDir(mkdirStep.name);
+            updateExecutionReport(report, mkdirStep, "success");
+            activeStep = null;
+            messages.push("目录已创建");
+          }
+
+          const moveStep = rowPlan.steps.find((step) => step.type === "move");
+          if (moveStep?.run) {
+            const moveNames = [moveStep.name];
+            const subtitles = findSubtitleFilesFor(oldName);
+            subtitles.forEach((sub) => {
+              const subMoveName = options.rename
+                ? subtitleTargetName(oldName, newVideoName, sub.name)
+                : sub.name;
+              moveNames.push(subMoveName);
+            });
+            setStatus(`正在移动 ${moveNames.length} 个文件...`);
+            activeStep = moveStep;
+            await moveFiles(state.currentPath, targetDir, moveNames);
+            updateExecutionReport(report, moveStep, "success");
+            activeStep = null;
+            messages.push("文件已移动");
+          }
         }
 
-        const imageStep = rowPlan.steps.find((step) => step.type === "image");
-        if (imageStep?.run) {
-          setStatus("正在上传图片...");
-          activeStep = imageStep;
-          await uploadPreparedImage(
-            joinPath(state.currentPath, imageName),
-            preparedImages.get(imageStep.id),
-            imageStep.label,
-          );
-          clearWriteTargetRetry(imageStep);
-          updateExecutionReport(report, imageStep, "success");
-          activeStep = null;
-          messages.push(state.mode === "tv" ? "缩略图上传完成" : "封面上传完成");
-        } else if (imageStep?.status === "skip") {
-          messages.push(`${imageStep.label}已存在，已跳过`);
-        } else if (imageStep?.status === "unavailable") {
-          messages.push(`无${imageStep.label}`);
-        }
-
-        const posterStep = rowPlan.steps.find((step) => step.type === "poster");
-        if (posterStep?.run) {
-          setStatus("正在上传电视剧目录封面...");
-          activeStep = posterStep;
-          await uploadPreparedImage(
-            joinPath(state.currentPath, posterName),
-            preparedImages.get(posterStep.id),
-            posterStep.label,
-          );
-          clearWriteTargetRetry(posterStep);
-          updateExecutionReport(report, posterStep, "success");
-          activeStep = null;
-          messages.push("目录封面上传完成");
-        } else if (posterStep?.status === "skip") {
-          messages.push("目录海报已存在，已跳过");
-        } else if (posterStep?.status === "unavailable") {
-          messages.push("无目录海报");
-        }
         const reportSummary = finishExecutionReport(report);
         state.selectedItem = null;
         state.selectedEpisode = null;
@@ -2740,16 +2585,13 @@ ${studios}
         }
         setStatus(
           nextName
-            ? `${messages.join("，")}。步骤成功 ${reportSummary.success}，跳过 ${reportSummary.skipped}，覆盖 ${reportSummary.overwrite}。已自动选中下一项：${nextName}`
-            : `${messages.join("，")}。步骤成功 ${reportSummary.success}，跳过 ${reportSummary.skipped}，覆盖 ${reportSummary.overwrite}。当前目录没有可继续处理的视频`,
+            ? `${messages.join("，")}。步骤成功 ${reportSummary.success}，跳过 ${reportSummary.skipped}。已自动选中下一项：${nextName}`
+            : `${messages.join("，")}。步骤成功 ${reportSummary.success}，跳过 ${reportSummary.skipped}。当前目录没有可继续处理的视频`,
           "ok",
         );
       } catch (error) {
         const failedStep = error.planStep || activeStep;
         if (failedStep) {
-          if (activeStep && ["nfo", "image", "poster"].includes(activeStep.type)) {
-            markWriteTargetForRetry(activeStep);
-          }
           updateExecutionReport(report, failedStep, "failed", error.message);
         }
         finishExecutionReport(report);
@@ -2787,7 +2629,6 @@ ${studios}
               </div>
               <div class="ol-tmdb-row">
                 <label class="ol-tmdb-field" style="flex: 1">
-                  <span class="ol-tmdb-label">语言</span>
                   <select class="ol-tmdb-select ol-tmdb-language">
                     <option value="zh-CN">zh-CN</option>
                     <option value="zh-TW">zh-TW</option>
@@ -2861,15 +2702,7 @@ ${studios}
               <div class="ol-tmdb-preview"></div>
               <div class="ol-tmdb-row ol-tmdb-operation-options">
                 <label class="ol-tmdb-check"><input class="ol-tmdb-do-rename" type="checkbox"> 改名</label>
-                <label class="ol-tmdb-check"><input class="ol-tmdb-do-nfo" type="checkbox"> 生成 / 上传 NFO</label>
-                <label class="ol-tmdb-check"><input class="ol-tmdb-do-image" type="checkbox"> 下载封面 / 缩略图</label>
-                <label class="ol-tmdb-image-size-field">
-                  <span>图片尺寸</span>
-                  <select class="ol-tmdb-select ol-tmdb-image-size">
-                    <option value="w780">适中（w780）</option>
-                    <option value="original">原图</option>
-                  </select>
-                </label>
+                <label class="ol-tmdb-check"><input class="ol-tmdb-do-structuring" type="checkbox"> 目录结构化</label>
                 <label class="ol-tmdb-image-size-field ol-tmdb-tv-only">
                   <span>批量并发</span>
                   <select class="ol-tmdb-select ol-tmdb-concurrency">
@@ -2878,11 +2711,9 @@ ${studios}
                     <option value="5">5</option>
                   </select>
                 </label>
-                <label class="ol-tmdb-check ol-tmdb-overwrite-check"><input class="ol-tmdb-overwrite" type="checkbox"> 允许覆盖已有 NFO / 图片</label>
                 <span class="ol-tmdb-operation-quick">
                   <button class="ol-tmdb-action" type="button" data-only-operation="rename">仅改名</button>
-                  <button class="ol-tmdb-action" type="button" data-only-operation="nfo">仅 NFO</button>
-                  <button class="ol-tmdb-action" type="button" data-only-operation="image">仅图片</button>
+                  <button class="ol-tmdb-action" type="button" data-only-operation="structuring">仅结构化</button>
                 </span>
               </div>
             </section>
@@ -2972,11 +2803,9 @@ ${studios}
       });
       const optionStorage = new Map([
         ["ol-tmdb-do-rename", STORAGE.rename],
-        ["ol-tmdb-do-nfo", STORAGE.nfo],
-        ["ol-tmdb-do-image", STORAGE.image],
-        ["ol-tmdb-overwrite", STORAGE.overwrite],
+        ["ol-tmdb-do-structuring", STORAGE.structuring],
       ]);
-      mask.querySelectorAll(".ol-tmdb-do-rename, .ol-tmdb-do-nfo, .ol-tmdb-do-image, .ol-tmdb-overwrite").forEach((input) => {
+      mask.querySelectorAll(".ol-tmdb-do-rename, .ol-tmdb-do-structuring").forEach((input) => {
         input.addEventListener("change", () => {
           const storageKey = [...input.classList]
             .map((className) => optionStorage.get(className))
@@ -2987,13 +2816,10 @@ ${studios}
       });
       mask.querySelectorAll("[data-only-operation]").forEach((button) => {
         button.addEventListener("click", () => {
-          setOperationSelection(new Set([button.dataset.onlyOperation]));
-          const label = { rename: "改名", nfo: "NFO", image: "图片" }[button.dataset.onlyOperation];
-          setStatus(`已切换为仅 ${label}`);
+          const operation = button.dataset.onlyOperation;
+          setOperationSelection(new Set([operation]));
+          setStatus(`已切换为仅 ${operation === "rename" ? "改名" : "结构化"}`);
         });
-      });
-      $(".ol-tmdb-image-size", mask).addEventListener("change", (event) => {
-        localStorage.setItem(STORAGE.imageSize, event.target.value);
       });
       $(".ol-tmdb-concurrency", mask).addEventListener("change", (event) => {
         const concurrency = Number(event.target.value);
@@ -3008,16 +2834,11 @@ ${studios}
       mask.addEventListener("click", (event) => {
         if (event.target === mask) closeModal();
       });
-      $(".ol-tmdb-api-key", mask).value = localStorage.getItem(STORAGE.key) || "";
+      $(".ol-tmdb-api-key", mask).value = localStorage.getItem(STORAGE.key) || DEFAULT_TMDB_API_KEY || "";
       $(".ol-tmdb-language", mask).value = localStorage.getItem(STORAGE.language) || "zh-CN";
       $(".ol-tmdb-mode", mask).value = localStorage.getItem(STORAGE.mode) || state.mode;
       $(".ol-tmdb-do-rename", mask).checked = localStorage.getItem(STORAGE.rename) !== "false";
-      $(".ol-tmdb-do-nfo", mask).checked = localStorage.getItem(STORAGE.nfo) !== "false";
-      $(".ol-tmdb-do-image", mask).checked = localStorage.getItem(STORAGE.image) === "true";
-      $(".ol-tmdb-overwrite", mask).checked = localStorage.getItem(STORAGE.overwrite) === "true";
-      $(".ol-tmdb-image-size", mask).value = TMDB_IMAGE_SIZES.has(localStorage.getItem(STORAGE.imageSize))
-        ? localStorage.getItem(STORAGE.imageSize)
-        : "w780";
+      $(".ol-tmdb-do-structuring", mask).checked = localStorage.getItem(STORAGE.structuring) === "true";
       $(".ol-tmdb-concurrency", mask).value = String(state.tmdbConcurrencyLimit);
       updateModeUi();
     };
@@ -3094,12 +2915,91 @@ ${studios}
       return true;
     };
 
+    let scrollButtonDirection = null;
+    let scrollUpdateScheduled = false;
+
+    const detectScrollDirection = () => {
+      const scrollTop = window.scrollY || document.documentElement.scrollTop || document.body.scrollTop || 0;
+      return scrollTop <= 1 ? "down" : "up";
+    };
+
+    const scrollButtonSvg = (direction) => {
+      if (direction === "down") {
+        return `
+      <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M12 5v14M5 12l7 7 7-7"></path>
+      </svg>`;
+      }
+      return `
+      <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M12 19V5M5 12l7-7 7 7"></path>
+      </svg>`;
+    };
+
+    const updateScrollButtonAppearance = () => {
+      const button = $("#ol-tmdb-scroll");
+      if (!button) {
+        scrollButtonDirection = null;
+        return;
+      }
+      const direction = detectScrollDirection();
+      if (direction === scrollButtonDirection) return;
+      scrollButtonDirection = direction;
+      const tip = button.parentElement?.querySelector(".ol-tmdb-tip");
+      button.innerHTML = scrollButtonSvg(direction);
+      button.setAttribute("aria-label", direction === "up" ? "回到顶部" : "滚动到底部");
+      if (tip) tip.textContent = direction === "up" ? "回到顶部" : "滚动到底部";
+    };
+
+    const handleScrollForButton = () => {
+      if (scrollUpdateScheduled) return;
+      scrollUpdateScheduled = true;
+      requestAnimationFrame(() => {
+        scrollUpdateScheduled = false;
+        updateScrollButtonAppearance();
+      });
+    };
+
+    const scrollToTarget = () => {
+      const direction = detectScrollDirection();
+      const maxScroll = Math.max(0, document.documentElement.scrollHeight - document.documentElement.clientHeight);
+      window.scrollTo({ top: direction === "up" ? 0 : maxScroll, behavior: "smooth" });
+    };
+
+    const insertScrollButton = (toolbarBox = $(".left-toolbar-box")) => {
+      if (routeExcludesToolbar()) return false;
+      if (!toolbarBox) return false;
+      const toolbar = $(".left-toolbar-in", toolbarBox) || $(".left-toolbar", toolbarBox);
+      if (!toolbar) return false;
+      if ($("#ol-tmdb-scroll", toolbar)) {
+        updateScrollButtonAppearance();
+        return true;
+      }
+      const wrap = document.createElement("span");
+      wrap.className = "ol-tmdb-button-wrap";
+      const button = document.createElement("button");
+      button.id = "ol-tmdb-scroll";
+      button.className = "ol-tmdb-button";
+      button.type = "button";
+      button.setAttribute("aria-label", "滚动");
+      const tip = document.createElement("span");
+      tip.className = "ol-tmdb-tip";
+      wrap.appendChild(button);
+      wrap.appendChild(tip);
+      toolbar.appendChild(wrap);
+      button.addEventListener("click", scrollToTarget);
+      scrollButtonDirection = null;
+      updateScrollButtonAppearance();
+      return true;
+    };
+
     let observedToolbarBox = null;
     let lifecycleScheduled = false;
     let searchTimer = 0;
 
     const toolbarObserver = new MutationObserver(() => {
       insertButton(observedToolbarBox);
+      insertScrollButton(observedToolbarBox);
     });
 
     const searchObserver = new MutationObserver(() => {
@@ -3180,6 +3080,7 @@ ${studios}
         stopToolbarSearch();
         hideToolbarDiagnostic();
         insertButton(observedToolbarBox);
+        insertScrollButton(observedToolbarBox);
       } else {
         removeStaleButtons();
         startToolbarSearch();
@@ -3217,6 +3118,7 @@ ${studios}
     window.addEventListener(ROUTE_CHANGE_EVENT, onRouteChange);
     window.addEventListener("popstate", onRouteChange);
     window.addEventListener("hashchange", onRouteChange);
+    window.addEventListener("scroll", handleScrollForButton, { passive: true });
     bodyObserver.observe(document.body, { childList: true });
     inspectRuntimeCompatibility();
     bindToolbarLifecycle();
