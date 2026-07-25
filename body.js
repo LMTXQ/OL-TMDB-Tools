@@ -10,8 +10,52 @@
       rename: "openlist_tmdb_rename",
       structuring: "openlist_tmdb_structuring",
       concurrency: "openlist_tmdb_concurrency",
+      includeEpisodeTitle: "openlist_tmdb_include_episode_title",
+      embedTmdbId: "openlist_tmdb_embed_tmdb_id",
+      includeYear: "openlist_tmdb_include_year",
+      seasonDirFormat: "openlist_tmdb_season_dir_format",
     };
     const DEFAULT_TMDB_API_KEY = document.currentScript?.dataset?.tmdbApiKey || "";
+    const SEASON_DIR_FORMATS = ["season-2digit", "s-2digit", "season-1digit"];
+    const DEFAULTS = {
+      rename: true,
+      structuring: false,
+      includeEpisodeTitle: true,
+      embedTmdbId: false,
+      includeYear: true,
+      seasonDirFormat: "season-2digit",
+    };
+    const parseBool = (value, fallback = false) => {
+      const lower = String(value ?? "").trim().toLowerCase();
+      if (["true", "1", "yes", "on"].includes(lower)) return true;
+      if (["false", "0", "no", "off", ""].includes(lower)) return false;
+      return fallback;
+    };
+    const parseEnum = (value, allowed, fallback) => {
+      const v = String(value ?? "").trim();
+      return allowed.includes(v) ? v : fallback;
+    };
+    const datasetDefaults = () => {
+      const ds = document.currentScript?.dataset || {};
+      return {
+        rename: parseBool(ds.defaultRename, DEFAULTS.rename),
+        structuring: parseBool(ds.defaultStructuring, DEFAULTS.structuring),
+        includeEpisodeTitle: parseBool(ds.defaultIncludeEpisodeTitle, DEFAULTS.includeEpisodeTitle),
+        embedTmdbId: parseBool(ds.defaultEmbedTmdbId, DEFAULTS.embedTmdbId),
+        includeYear: parseBool(ds.defaultIncludeYear, DEFAULTS.includeYear),
+        seasonDirFormat: parseEnum(ds.defaultSeasonDirFormat, SEASON_DIR_FORMATS, DEFAULTS.seasonDirFormat),
+      };
+    };
+    const resolveBoolOption = (storageKey, datasetDefault) => {
+      const stored = localStorage.getItem(storageKey);
+      if (stored != null) return stored === "true";
+      return datasetDefault;
+    };
+    const resolveEnumOption = (storageKey, allowed, datasetDefault) => {
+      const stored = localStorage.getItem(storageKey);
+      if (stored != null && allowed.includes(stored)) return stored;
+      return datasetDefault;
+    };
     const REQUEST_TIMEOUTS = {
       tmdb: 12_000,
       image: 30_000,
@@ -81,6 +125,7 @@
       subtitleScanCache: new Map(),
       customTitle: "",
       searchMode: "keyword",
+      titleCandidates: { source: "", list: [], index: 0 },
     };
     const tmdbSessionCache = new Map();
     const tmdbInflightRequests = new Map();
@@ -151,6 +196,11 @@
       if (base && pathname.startsWith(base)) pathname = pathname.slice(base.length) || "/";
       if (!pathname.startsWith("/")) pathname = `/${pathname}`;
       return pathname || "/";
+    };
+
+    const currentFolderName = () => {
+      const parts = currentOpenListPath().split("/").filter(Boolean);
+      return parts.length ? parts[parts.length - 1] : "";
     };
 
     const joinPath = (dir, name) => {
@@ -367,6 +417,46 @@
       return matches;
     };
 
+    const TITLE_RESIDUE_PATTERNS = [
+      /\[[^\]]*]/g,
+      /\([^)]*\)/g,
+      CLEANUP_TECHNICAL_PATTERN,
+      /\b(?:10|12|8)-?bit\b/gi,
+      /\bma\d+p\b/gi,
+      /\bS\d{1,2}\s*E\d{1,3}(?:[.\s_-]?v\d+)?\b/gi,
+      /\bEP?\s*\d{1,3}\b/gi,
+      /\b第\s*\d{1,3}\s*[集话話]\b/gi,
+    ];
+
+    const cleanTitleCandidate = (title) => {
+      let s = String(title || "");
+      for (const pattern of TITLE_RESIDUE_PATTERNS) {
+        s = s.replace(pattern, " ");
+      }
+      s = s.replace(/[._]+/g, " ").replace(/\s+/g, " ").trim();
+      return s;
+    };
+
+    const extractTitleCandidates = (name) => {
+      const normalizedName = VIDEO_EXTS.has(extname(name)) ? name : `${name}.mkv`;
+      const seen = new Set();
+      const candidates = [];
+      const push = (title) => {
+        const cleaned = cleanTitleCandidate(title);
+        const key = cleaned.toLowerCase();
+        if (cleaned && !seen.has(key)) {
+          seen.add(key);
+          candidates.push(cleaned);
+        }
+      };
+      const ep = parseEpisodeName(normalizedName);
+      if (ep?.title) push(ep.title);
+      const movie = parseMovieName(normalizedName);
+      if (movie?.title) push(movie.title);
+      candidates.sort((a, b) => a.length - b.length);
+      return candidates;
+    };
+
     const cleanupRuleOptions = () => ({
       ads: Boolean($(".ol-tmdb-cleanup-ads")?.checked),
       brackets: Boolean($(".ol-tmdb-cleanup-brackets")?.checked),
@@ -479,23 +569,51 @@
     const tvEpisodeCode = (season, episode) =>
       `S${String(season ?? 1).padStart(2, "0")}E${String(episode ?? 0).padStart(2, "0")}`;
 
-    const tvEpisodeBaseName = (show, episode, season, episodeNumber) => {
+    const formatSeasonDir = (season, format) => {
+      const n = Number(season ?? 1);
+      const safe = Number.isFinite(n) && n >= 0 ? n : 1;
+      switch (format) {
+        case "s-2digit":
+          return `S${String(safe).padStart(2, "0")}`;
+        case "season-1digit":
+          return `Season ${safe}`;
+        case "season-2digit":
+        default:
+          return `Season ${String(safe).padStart(2, "0")}`;
+      }
+    };
+
+    const tmdbIdTag = (item, enabled) => {
+      if (!enabled || !item?.id) return "";
+      return ` [tmdbid-${item.id}]`;
+    };
+
+    const tvEpisodeBaseName = (show, episode, season, episodeNumber, options = namingOptions()) => {
       const title = safeFilePart(effectiveTitle(show));
-      const episodeTitle = safeFilePart(episode?.name || "");
       const code = tvEpisodeCode(season, episodeNumber);
-      return episodeTitle ? `${title} - ${code} - ${episodeTitle}` : `${title} - ${code}`;
+      const parts = [title, code];
+      if (options.includeEpisodeTitle) {
+        const episodeTitle = safeFilePart(episode?.name || "");
+        if (episodeTitle) parts.push(episodeTitle);
+      }
+      let base = parts.join(" - ");
+      if (options.embedTmdbId) base += tmdbIdTag(show, true);
+      return base;
     };
 
     const targetBaseName = () => {
       if (!state.selectedItem) return "";
+      const options = namingOptions();
       const title = safeFilePart(effectiveTitle(state.selectedItem));
       const year = itemYear(state.selectedItem);
       if (state.mode === "tv") {
         const season = positiveNumber($(".ol-tmdb-season")?.value) ?? 1;
         const episode = positiveNumber($(".ol-tmdb-episode")?.value);
-        return tvEpisodeBaseName(state.selectedItem, state.selectedEpisode, season, episode);
+        return tvEpisodeBaseName(state.selectedItem, state.selectedEpisode, season, episode, options);
       }
-      return year ? `${title} (${year})` : title;
+      const yearPart = options.includeYear && year ? ` (${year})` : "";
+      const idTag = tmdbIdTag(state.selectedItem, options.embedTmdbId);
+      return `${title}${yearPart}${idTag}`;
     };
 
     const targetVideoName = () => {
@@ -506,9 +624,12 @@
 
     const structuringShowDir = () => {
       if (!state.selectedItem) return "";
+      const options = namingOptions();
       const title = safeFilePart(effectiveTitle(state.selectedItem));
       const year = itemYear(state.selectedItem);
-      const dirName = year ? `${title} (${year})` : title;
+      const yearPart = options.includeYear && year ? ` (${year})` : "";
+      const idTag = tmdbIdTag(state.selectedItem, options.embedTmdbId);
+      const dirName = `${title}${yearPart}${idTag}`;
       return joinPath(state.currentPath, dirName);
     };
 
@@ -516,8 +637,9 @@
       const showDir = structuringShowDir();
       if (!showDir) return "";
       if (state.mode === "tv") {
+        const options = namingOptions();
         const season = positiveNumber($(".ol-tmdb-season")?.value) ?? 1;
-        return joinPath(showDir, `Season ${String(season).padStart(2, "0")}`);
+        return joinPath(showDir, formatSeasonDir(season, options.seasonDirFormat));
       }
       return showDir;
     };
@@ -525,7 +647,8 @@
     const structuringSeasonDir = (season) => {
       const showDir = structuringShowDir();
       if (!showDir) return "";
-      return joinPath(showDir, `Season ${String(season ?? 1).padStart(2, "0")}`);
+      const options = namingOptions();
+      return joinPath(showDir, formatSeasonDir(season, options.seasonDirFormat));
     };
 
     const subtitleTargetName = (originalVideoName, targetVideoName, subtitleName) => {
@@ -569,6 +692,7 @@
       state.writeContentBypass = false;
       state.subtitleScanCache = new Map();
       state.customTitle = "";
+      state.titleCandidates = { source: "", list: [], index: 0 };
     };
 
     const ensureLoadedDirectory = () => {
@@ -606,6 +730,25 @@
       return {
         rename: capabilities.rename && Boolean($(".ol-tmdb-do-rename")?.checked),
         structuring: capabilities.structuring && Boolean($(".ol-tmdb-do-structuring")?.checked),
+      };
+    };
+
+    const namingOptions = () => {
+      const defaults = datasetDefaults();
+      const boolFromDom = (selector, storageKey, defaultKey) => {
+        const input = $(selector);
+        if (input) return Boolean(input.checked);
+        return resolveBoolOption(storageKey, defaults[defaultKey]);
+      };
+      const seasonSelect = $(".ol-tmdb-season-dir-format");
+      const seasonFormat = seasonSelect
+        ? (SEASON_DIR_FORMATS.includes(seasonSelect.value) ? seasonSelect.value : defaults.seasonDirFormat)
+        : resolveEnumOption(STORAGE.seasonDirFormat, SEASON_DIR_FORMATS, defaults.seasonDirFormat);
+      return {
+        includeEpisodeTitle: boolFromDom(".ol-tmdb-include-episode-title", STORAGE.includeEpisodeTitle, "includeEpisodeTitle"),
+        embedTmdbId: boolFromDom(".ol-tmdb-embed-tmdb-id", STORAGE.embedTmdbId, "embedTmdbId"),
+        includeYear: boolFromDom(".ol-tmdb-include-year", STORAGE.includeYear, "includeYear"),
+        seasonDirFormat: seasonFormat,
       };
     };
 
@@ -2333,6 +2476,31 @@
       else doSearch();
     };
 
+    const applyTitleCandidate = (source) => {
+      const sourceName = source === "file" ? selectedFile()?.name : currentFolderName();
+      if (!sourceName) {
+        setStatus(source === "file" ? "请先选择一个视频文件" : "当前目录无文件夹名", "error");
+        return;
+      }
+      const list = extractTitleCandidates(sourceName);
+      if (!list.length) {
+        setStatus(`无法从${source === "file" ? "文件名" : "文件夹名"}解析出影视名`, "error");
+        return;
+      }
+      const prev = state.titleCandidates;
+      const sameSource = prev.source === source;
+      const sameList = sameSource && prev.list.length === list.length &&
+        prev.list.every((v, i) => v === list[i]);
+      const index = sameList ? (prev.index + 1) % list.length : 0;
+      state.titleCandidates = { source, list, index };
+      const queryInput = $(".ol-tmdb-query");
+      if (queryInput) queryInput.value = list[index];
+      setStatus(
+        list.length > 1 ? `已填入候选 ${index + 1}/${list.length}：${list[index]}` : `已填入：${list[index]}`,
+        "ok",
+      );
+    };
+
     const selectItem = async (id) => {
       setBusy(true);
       setStatus(`正在读取${state.mode === "tv" ? "电视剧" : "电影"}详情...`);
@@ -2780,6 +2948,8 @@
                     <span class="ol-tmdb-query-tools">
                       <button type="button" class="ol-tmdb-query-clear" title="清空搜索词" aria-label="清空搜索词">×</button>
                       <button type="button" class="ol-tmdb-query-restore" title="恢复为文件名解析结果" aria-label="恢复为文件名解析结果">↺</button>
+                      <button type="button" class="ol-tmdb-query-title-file" title="从视频文件名解析影视名（再次点击切换下一候选）" aria-label="从视频文件名解析影视名">名</button>
+                      <button type="button" class="ol-tmdb-query-title-dir" title="从文件夹名解析影视名（再次点击切换下一候选）" aria-label="从文件夹名解析影视名">夹</button>
                     </span>
                     <span class="ol-tmdb-search-mode-switch" role="group" aria-label="搜索方式">
                       <button type="button" data-mode="keyword" data-active="true">关键词</button>
@@ -2827,6 +2997,19 @@
                   <button class="ol-tmdb-action" type="button" data-only-operation="rename">仅改名</button>
                   <button class="ol-tmdb-action" type="button" data-only-operation="structuring">仅结构化</button>
                 </span>
+              </div>
+              <div class="ol-tmdb-row ol-tmdb-naming-options">
+                <label class="ol-tmdb-check ol-tmdb-tv-only"><input class="ol-tmdb-include-episode-title" type="checkbox"> 包含集标题</label>
+                <label class="ol-tmdb-check"><input class="ol-tmdb-include-year" type="checkbox"> 包含年份</label>
+                <label class="ol-tmdb-check"><input class="ol-tmdb-embed-tmdb-id" type="checkbox"> 嵌入 TMDB ID</label>
+                <label class="ol-tmdb-image-size-field">
+                  <span>季目录</span>
+                  <select class="ol-tmdb-select ol-tmdb-season-dir-format">
+                    <option value="season-2digit">Season 01</option>
+                    <option value="s-2digit">S01</option>
+                    <option value="season-1digit">Season 1</option>
+                  </select>
+                </label>
               </div>
             </section>
           </main>
@@ -2929,6 +3112,8 @@
         }
         hydrateSearchFromFile();
       });
+      $(".ol-tmdb-query-title-file", mask).addEventListener("click", () => applyTitleCandidate("file"));
+      $(".ol-tmdb-query-title-dir", mask).addEventListener("click", () => applyTitleCandidate("dir"));
       $(".ol-tmdb-custom-title", mask).addEventListener("input", (event) => {
         state.customTitle = event.target.value;
         renderPreview();
@@ -2945,6 +3130,27 @@
           if (storageKey) localStorage.setItem(storageKey, input.checked ? "true" : "false");
           renderPreview();
         });
+      });
+      const namingOptionStorage = new Map([
+        ["ol-tmdb-include-episode-title", STORAGE.includeEpisodeTitle],
+        ["ol-tmdb-include-year", STORAGE.includeYear],
+        ["ol-tmdb-embed-tmdb-id", STORAGE.embedTmdbId],
+      ]);
+      mask.querySelectorAll(".ol-tmdb-include-episode-title, .ol-tmdb-include-year, .ol-tmdb-embed-tmdb-id").forEach((input) => {
+        input.addEventListener("change", () => {
+          const storageKey = [...input.classList]
+            .map((className) => namingOptionStorage.get(className))
+            .find(Boolean);
+          if (storageKey) localStorage.setItem(storageKey, input.checked ? "true" : "false");
+          renderPreview();
+        });
+      });
+      $(".ol-tmdb-season-dir-format", mask).addEventListener("change", (event) => {
+        const value = event.target.value;
+        if (SEASON_DIR_FORMATS.includes(value)) {
+          localStorage.setItem(STORAGE.seasonDirFormat, value);
+          renderPreview();
+        }
       });
       mask.querySelectorAll("[data-only-operation]").forEach((button) => {
         button.addEventListener("click", () => {
@@ -2966,12 +3172,17 @@
       mask.addEventListener("click", (event) => {
         if (event.target === mask) closeModal();
       });
+      const defaults = datasetDefaults();
       $(".ol-tmdb-api-key", mask).value = localStorage.getItem(STORAGE.key) || DEFAULT_TMDB_API_KEY || "";
       $(".ol-tmdb-language", mask).value = localStorage.getItem(STORAGE.language) || "zh-CN";
       $(".ol-tmdb-mode", mask).value = state.mode;
-      $(".ol-tmdb-do-rename", mask).checked = localStorage.getItem(STORAGE.rename) !== "false";
-      $(".ol-tmdb-do-structuring", mask).checked = localStorage.getItem(STORAGE.structuring) === "true";
+      $(".ol-tmdb-do-rename", mask).checked = resolveBoolOption(STORAGE.rename, defaults.rename);
+      $(".ol-tmdb-do-structuring", mask).checked = resolveBoolOption(STORAGE.structuring, defaults.structuring);
       $(".ol-tmdb-concurrency", mask).value = String(state.tmdbConcurrencyLimit);
+      $(".ol-tmdb-include-episode-title", mask).checked = resolveBoolOption(STORAGE.includeEpisodeTitle, defaults.includeEpisodeTitle);
+      $(".ol-tmdb-include-year", mask).checked = resolveBoolOption(STORAGE.includeYear, defaults.includeYear);
+      $(".ol-tmdb-embed-tmdb-id", mask).checked = resolveBoolOption(STORAGE.embedTmdbId, defaults.embedTmdbId);
+      $(".ol-tmdb-season-dir-format", mask).value = resolveEnumOption(STORAGE.seasonDirFormat, SEASON_DIR_FORMATS, defaults.seasonDirFormat);
       updateModeUi();
     };
 
