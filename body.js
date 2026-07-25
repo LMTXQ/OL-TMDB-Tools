@@ -80,6 +80,7 @@
       tmdbRateLimited: false,
       subtitleScanCache: new Map(),
       customTitle: "",
+      searchMode: "keyword",
     };
     const tmdbSessionCache = new Map();
     const tmdbInflightRequests = new Map();
@@ -2011,6 +2012,13 @@
       if (customTitleInput && document.activeElement !== customTitleInput) {
         customTitleInput.value = state.customTitle;
       }
+      document.querySelectorAll(".ol-tmdb-search-mode-switch button").forEach((btn) => {
+        btn.dataset.active = String(btn.dataset.mode === state.searchMode);
+      });
+      const queryInput = $(".ol-tmdb-query");
+      if (queryInput) {
+        queryInput.placeholder = state.searchMode === "id" ? "输入 TMDB ID（纯数字）" : "";
+      }
       const executeButton = $(".ol-tmdb-execute");
       if (executeButton) executeButton.textContent = isTvBatchActive() ? "批量执行" : "执行";
     };
@@ -2050,6 +2058,26 @@
       const parsed = parseMovieName(file.name);
       $(".ol-tmdb-query").value = parsed.title;
       $(".ol-tmdb-year").value = parsed.year;
+    };
+
+    const selectParsedFiles = (silent = false) => {
+      const parsedNames = state.files
+        .filter((file) => parseEpisodeName(file.name))
+        .map((file) => file.name);
+      if (!parsedNames.length) {
+        if (!silent) setStatus("当前目录没有可自动解析季集的视频", "error");
+        return false;
+      }
+      state.selectedNames = parsedNames;
+      state.selectedName = parsedNames[0];
+      if (state.selectedNames.length < 2) {
+        state.selectedItem = null;
+        state.results = [];
+      }
+      state.selectedEpisode = null;
+      syncTvBatchRows();
+      hydrateSearchFromFile();
+      return true;
     };
 
     const chooseNextFileName = (previousName, renamedName) => {
@@ -2120,17 +2148,10 @@
         state.files[0]?.name ||
         "";
       if (state.mode === "tv") {
-        const available = new Set(state.files.map((file) => file.name));
-        const previousSelected = state.selectedNames.filter((name) => available.has(name));
-        state.selectedNames =
-          previousSelected.length && (!preferredName || previousSelected.includes(preferredName))
-            ? previousSelected
-            : preferredName && state.selectedName === preferredName
-              ? [preferredName]
-              : state.selectedName
-                ? [state.selectedName]
-                : [];
-        syncTvBatchRows();
+        if (!selectParsedFiles(true)) {
+          state.selectedNames = state.selectedName ? [state.selectedName] : [];
+          syncTvBatchRows();
+        }
       } else {
         state.selectedNames = state.selectedName ? [state.selectedName] : [];
         state.tvBatchRows = [];
@@ -2300,7 +2321,16 @@
         setStatus("请输入有效的 TMDB ID（纯数字）", "error");
         return;
       }
-      selectItem(Number(id));
+      await selectItem(Number(id));
+      if (state.selectedItem) {
+        state.results = [state.selectedItem];
+        renderResults();
+      }
+    };
+
+    const runSearch = () => {
+      if (state.searchMode === "id") doSearchById();
+      else doSearch();
     };
 
     const selectItem = async (id) => {
@@ -2745,7 +2775,17 @@
                   </select>
                 </label>
                 <label class="ol-tmdb-field" style="flex: 3">
-                  <span class="ol-tmdb-label">搜索词</span>
+                  <span class="ol-tmdb-label ol-tmdb-search-mode-field">
+                    搜索词
+                    <span class="ol-tmdb-query-tools">
+                      <button type="button" class="ol-tmdb-query-clear" title="清空搜索词" aria-label="清空搜索词">×</button>
+                      <button type="button" class="ol-tmdb-query-restore" title="恢复为文件名解析结果" aria-label="恢复为文件名解析结果">↺</button>
+                    </span>
+                    <span class="ol-tmdb-search-mode-switch" role="group" aria-label="搜索方式">
+                      <button type="button" data-mode="keyword" data-active="true">关键词</button>
+                      <button type="button" data-mode="id">ID</button>
+                    </span>
+                  </span>
                   <input class="ol-tmdb-input ol-tmdb-query" type="text">
                 </label>
                 <label class="ol-tmdb-field ol-tmdb-movie-only" style="flex: 0.6">
@@ -2761,7 +2801,6 @@
                   <input class="ol-tmdb-input ol-tmdb-episode" type="text" inputmode="numeric">
                 </label>
                 <button class="ol-tmdb-action ol-tmdb-search" type="button" data-primary="true" style="align-self: end">搜索</button>
-                <button class="ol-tmdb-action ol-tmdb-search-id" type="button" style="align-self: end" title="将搜索框内容作为 TMDB ID 直接查询">ID</button>
               </div>
               <div class="ol-tmdb-list">
                 <div class="ol-tmdb-results"></div>
@@ -2827,23 +2866,7 @@
         render();
       });
       $(".ol-tmdb-select-parsed-files", mask).addEventListener("click", () => {
-        const parsedNames = state.files
-          .filter((file) => parseEpisodeName(file.name))
-          .map((file) => file.name);
-        if (!parsedNames.length) {
-          setStatus("当前目录没有可自动解析季集的视频", "error");
-          return;
-        }
-        state.selectedNames = parsedNames;
-        state.selectedName = parsedNames[0];
-        if (state.selectedNames.length < 2) {
-          state.selectedItem = null;
-          state.results = [];
-        }
-        state.selectedEpisode = null;
-        syncTvBatchRows();
-        hydrateSearchFromFile();
-        render();
+        if (selectParsedFiles()) render();
       });
       $(".ol-tmdb-clear-files", mask).addEventListener("click", () => {
         state.selectedNames = [];
@@ -2856,25 +2879,55 @@
       });
       $(".ol-tmdb-mode", mask).addEventListener("change", (event) => {
         state.mode = event.target.value;
-        state.selectedNames = state.selectedName ? [state.selectedName] : [];
         state.selectedItem = null;
         state.selectedEpisode = null;
         state.customTitle = "";
         const customTitleInput = $(".ol-tmdb-custom-title");
         if (customTitleInput) customTitleInput.value = "";
-        state.tvBatchRows = [];
         state.results = [];
+        if (state.mode === "tv") {
+          selectParsedFiles(true);
+        } else {
+          state.selectedNames = state.selectedName ? [state.selectedName] : [];
+          state.tvBatchRows = [];
+        }
         updateModeUi();
         hydrateSearchFromFile();
         render();
       });
-      $(".ol-tmdb-search", mask).addEventListener("click", doSearch);
-      $(".ol-tmdb-search-id", mask).addEventListener("click", doSearchById);
+      $(".ol-tmdb-search", mask).addEventListener("click", runSearch);
+      $(".ol-tmdb-search-mode-switch", mask).addEventListener("click", (event) => {
+        const btn = event.target.closest("button[data-mode]");
+        if (!btn) return;
+        state.searchMode = btn.dataset.mode;
+        document.querySelectorAll(".ol-tmdb-search-mode-switch button").forEach((b) => {
+          b.dataset.active = String(b.dataset.mode === state.searchMode);
+        });
+        const queryInput = $(".ol-tmdb-query", mask);
+        if (queryInput) {
+          queryInput.placeholder = state.searchMode === "id" ? "输入 TMDB ID（纯数字）" : "";
+        }
+      });
       $(".ol-tmdb-query", mask).addEventListener("keydown", (event) => {
-        if (event.key === "Enter") doSearch();
+        if (event.key === "Enter") runSearch();
       });
       $(".ol-tmdb-year", mask).addEventListener("keydown", (event) => {
-        if (event.key === "Enter") doSearch();
+        if (event.key === "Enter") runSearch();
+      });
+      $(".ol-tmdb-query-clear", mask).addEventListener("click", () => {
+        const queryInput = $(".ol-tmdb-query", mask);
+        if (queryInput) {
+          queryInput.value = "";
+          queryInput.focus();
+        }
+      });
+      $(".ol-tmdb-query-restore", mask).addEventListener("click", () => {
+        const file = selectedFile();
+        if (!file) {
+          setStatus("请先选择一个视频文件以恢复解析结果", "error");
+          return;
+        }
+        hydrateSearchFromFile();
       });
       $(".ol-tmdb-custom-title", mask).addEventListener("input", (event) => {
         state.customTitle = event.target.value;
