@@ -229,6 +229,10 @@
     flex-wrap: wrap;
   }
 
+  .ol-tmdb-naming-options {
+    flex-wrap: wrap;
+  }
+
   .ol-tmdb-image-size-field {
     display: inline-flex;
     align-items: center;
