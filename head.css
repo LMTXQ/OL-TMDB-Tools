@@ -363,6 +363,62 @@
     display: none;
   }
 
+  .ol-tmdb-search-mode-field {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .ol-tmdb-query-tools {
+    display: inline-flex;
+    gap: 2px;
+  }
+
+  .ol-tmdb-query-tools button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 20px;
+    height: 20px;
+    border: 1px solid var(--hope-colors-neutral6, #d9d9d9);
+    border-radius: 4px;
+    background: transparent;
+    color: var(--hope-colors-neutral11, #555);
+    font-size: 13px;
+    line-height: 1;
+    padding: 0;
+    cursor: pointer;
+    transition: border-color 0.15s ease, color 0.15s ease;
+  }
+
+  .ol-tmdb-query-tools button:hover {
+    border-color: var(--hope-colors-primary9, #1677ff);
+    color: var(--hope-colors-primary9, #1677ff);
+  }
+
+  .ol-tmdb-search-mode-switch {
+    margin-left: auto;
+    display: inline-flex;
+    border: 1px solid var(--hope-colors-neutral6, #d9d9d9);
+    border-radius: 6px;
+    overflow: hidden;
+  }
+
+  .ol-tmdb-search-mode-switch button {
+    border: 0;
+    background: transparent;
+    color: var(--hope-colors-neutral11, #555);
+    font-size: 11px;
+    padding: 2px 8px;
+    cursor: pointer;
+    line-height: 1.6;
+  }
+
+  .ol-tmdb-search-mode-switch button[data-active="true"] {
+    background: var(--hope-colors-primary9, #1677ff);
+    color: #fff;
+  }
+
   .ol-tmdb-code {
     font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
     word-break: break-all;
