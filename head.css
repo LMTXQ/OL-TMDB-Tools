@@ -172,6 +172,14 @@
     font-weight: 650;
   }
 
+  .ol-tmdb-version {
+    margin-left: 8px;
+    font-size: 11px;
+    font-weight: 400;
+    color: var(--hope-colors-neutral9, #999);
+    vertical-align: middle;
+  }
+
   .ol-tmdb-body {
     overflow: auto;
     padding: 16px;
