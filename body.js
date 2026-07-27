@@ -452,24 +452,84 @@
       return s;
     };
 
+    // 检测是否含 CJK 字符（中文/日文/韩文）
+    const containsCjk = (s) => /[\u3400-\u9fff\u3040-\u30ff\uac00-\ud7af]/.test(String(s || ""));
+
+    // 将中英文混杂的标题按语种分段：连续的同语种词合并为一段，
+    // 返回分段结果（仅当确实发生语种切换时才返回多段，否则返回空数组避免无意义重复）
+    const splitTitleByLanguage = (text) => {
+      const words = String(text || "").split(/\s+/).filter(Boolean);
+      if (words.length < 2) return [];
+      const segments = [];
+      let current = [];
+      let currentCjk = null;
+      for (const word of words) {
+        const isCjk = containsCjk(word);
+        if (currentCjk === null) {
+          currentCjk = isCjk;
+          current = [word];
+        } else if (isCjk === currentCjk) {
+          current.push(word);
+        } else {
+          if (current.length) segments.push(current.join(" "));
+          current = [word];
+          currentCjk = isCjk;
+        }
+      }
+      if (current.length) segments.push(current.join(" "));
+      return segments.length > 1 ? segments : [];
+    };
+
     const extractTitleCandidates = (name) => {
       const normalizedName = VIDEO_EXTS.has(extname(name)) ? name : `${name}.mkv`;
+      const base = basename(normalizedName);
       const seen = new Set();
-      const candidates = [];
-      const push = (title) => {
-        const cleaned = cleanTitleCandidate(title);
+      // 候选至少需含一个字母（拉丁 / CJK），用于过滤纯标点 / 纯数字残留（如 "-"、"01-12"）
+      const hasLetter = (s) => /[a-zA-Z\u3400-\u9fff\u3040-\u30ff\uac00-\ud7af]/.test(String(s || ""));
+      const dedup = (cleaned) => {
         const key = cleaned.toLowerCase();
-        if (cleaned && !seen.has(key)) {
+        if (cleaned && hasLetter(cleaned) && !seen.has(key)) {
           seen.add(key);
-          candidates.push(cleaned);
+          return true;
         }
+        return false;
       };
+      // 主候选：parseEpisodeName / parseMovieName 提取的标题（保持原有排序与去重行为）
+      const primary = [];
       const ep = parseEpisodeName(normalizedName);
-      if (ep?.title) push(ep.title);
+      if (ep?.title) {
+        const c = cleanTitleCandidate(ep.title);
+        if (dedup(c)) primary.push(c);
+      }
       const movie = parseMovieName(normalizedName);
-      if (movie?.title) push(movie.title);
-      candidates.sort((a, b) => a.length - b.length);
-      return candidates;
+      if (movie?.title) {
+        const c = cleanTitleCandidate(movie.title);
+        if (dedup(c)) primary.push(c);
+      }
+      primary.sort((a, b) => a.length - b.length);
+      // 补充候选：方括号内容、括号外文本、中英文分段（追加在主候选之后，不影响首选项）
+      // [xxx]yyy → xxx 与 yyy 各自独立；[xxx][yyy] → xxx 与 yyy 各自独立
+      const extra = [];
+      const pushExtra = (title) => {
+        const c = cleanTitleCandidate(title);
+        if (dedup(c)) extra.push(c);
+      };
+      const bracketRe = /\[([^\]]*)\]/g;
+      let m;
+      while ((m = bracketRe.exec(base)) !== null) {
+        const content = m[1].trim();
+        // 跳过集数标记：[01]、[01v2]、[12 END]、[01-12(全集)] 等
+        // （数字开头 + 可选版本号 + 可选分隔符与后续标记词）
+        if (/^\d{1,3}(?:v\d+)?(?:[._\s-]+[^\]\[]+)?$/.test(content)) continue;
+        pushExtra(content);
+      }
+      pushExtra(base.replace(/\[[^\]]*\]/g, " "));
+      // 中英文混杂时按语种分段，每段作为独立候选
+      for (const candidate of [...primary, ...extra]) {
+        for (const seg of splitTitleByLanguage(candidate)) pushExtra(seg);
+      }
+      extra.sort((a, b) => a.length - b.length);
+      return [...primary, ...extra];
     };
 
     const cleanupRuleOptions = () => ({
@@ -2737,6 +2797,10 @@
           state.results = [];
           state.tvBatchRows = [];
         }
+        if (!finalFailed) {
+          closeModal();
+          await sleep(1000);
+        }
         if (reportSummary.success) {
           await refreshFilesAfterMutation(retainedNames[0] || "");
         } else {
@@ -2755,7 +2819,6 @@
             : `批量完成 ${success} 集；步骤成功 ${reportSummary.success}，跳过 ${reportSummary.skipped}`,
           finalFailed ? "error" : "ok",
         );
-        if (!finalFailed) closeModal();
       } catch (error) {
         const failedSteps = error.planStep ? [error.planStep] : activeSteps;
         failedSteps.forEach((step) => updateExecutionReport(report, step, "failed", error.message));
@@ -2888,6 +2951,8 @@
         state.selectedItem = null;
         state.selectedEpisode = null;
         state.results = [];
+        closeModal();
+        await sleep(1000);
         if (reportSummary.success) {
           await refreshFilesAfterMutation(nextName);
         } else {
@@ -2899,7 +2964,6 @@
             : `${messages.join("，")}。步骤成功 ${reportSummary.success}，跳过 ${reportSummary.skipped}。当前目录没有可继续处理的视频`,
           "ok",
         );
-        closeModal();
       } catch (error) {
         const failedStep = error.planStep || activeStep;
         if (failedStep) {
