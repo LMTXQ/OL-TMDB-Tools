@@ -12,16 +12,19 @@
       concurrency: "openlist_tmdb_concurrency",
       includeEpisodeTitle: "openlist_tmdb_include_episode_title",
       embedTmdbId: "openlist_tmdb_embed_tmdb_id",
+      tmdbIdFileMode: "openlist_tmdb_id_file_mode",
       includeYear: "openlist_tmdb_include_year",
       seasonDirFormat: "openlist_tmdb_season_dir_format",
     };
     const DEFAULT_TMDB_API_KEY = document.currentScript?.dataset?.tmdbApiKey || "";
     const SEASON_DIR_FORMATS = ["season-2digit", "s-2digit", "season-1digit"];
+    const TMDB_ID_FILE_MODES = ["files-both", "files-neither", "files-movie-only", "files-tv-only"];
     const DEFAULTS = {
       rename: true,
       structuring: false,
       includeEpisodeTitle: true,
       embedTmdbId: false,
+      tmdbIdFileMode: "files-both",
       includeYear: true,
       seasonDirFormat: "season-2digit",
     };
@@ -42,6 +45,7 @@
         structuring: parseBool(ds.defaultStructuring, DEFAULTS.structuring),
         includeEpisodeTitle: parseBool(ds.defaultIncludeEpisodeTitle, DEFAULTS.includeEpisodeTitle),
         embedTmdbId: parseBool(ds.defaultEmbedTmdbId, DEFAULTS.embedTmdbId),
+        tmdbIdFileMode: parseEnum(ds.defaultTmdbIdFileMode, TMDB_ID_FILE_MODES, DEFAULTS.tmdbIdFileMode),
         includeYear: parseBool(ds.defaultIncludeYear, DEFAULTS.includeYear),
         seasonDirFormat: parseEnum(ds.defaultSeasonDirFormat, SEASON_DIR_FORMATS, DEFAULTS.seasonDirFormat),
       };
@@ -290,19 +294,19 @@
     const deduplicateSubtitlesByVersion = (subtitles) => {
       const groups = new Map();
       for (const sub of subtitles) {
-        const ep = parseEpisodeName(sub.name);
-        if (!ep) {
-          groups.set(sub.name, sub);
-          continue;
-        }
-        const key = `${ep.season}-${ep.episode}`;
+        // 去重 key 同时包含目录与文件名（剔除紧随 episode 标记后的版本号），
+        // 避免不同语言版本（如 .chs.ass + .cht.ass）或不同子目录下的同集字幕被错误合并
+        const key = `${sub.dir || ""}/${sub.name}`
+          .toLowerCase()
+          .replace(/([se]\d{1,3})\s*v\d+/gi, "$1")
+          .replace(/([se]\d{1,3})[._\s-]v\d+/gi, "$1");
         const existing = groups.get(key);
         if (!existing) {
           groups.set(key, sub);
           continue;
         }
         const existingVersion = parseEpisodeName(existing.name)?.version || 0;
-        const currentVersion = ep.version || 0;
+        const currentVersion = parseEpisodeName(sub.name)?.version || 0;
         if (currentVersion > existingVersion) {
           groups.set(key, sub);
         }
@@ -323,7 +327,14 @@
         .replace(/[._]+/g, " ")
         .replace(/\s+/g, " ")
         .trim();
-      return { title: title || base.replace(/[._]+/g, " ").trim(), year };
+      // fallback：将方括号替换为内容+空格，避免返回未清理的原始 base
+      // 否则 cleanTitleCandidate 会把方括号连同内容清空，导致 extractTitleCandidates 丢失该候选
+      const fallbackTitle = base
+        .replace(/\[([^\]]*)\]/g, " $1 ")
+        .replace(/[._]+/g, " ")
+        .replace(/\s+/g, " ")
+        .trim();
+      return { title: title || fallbackTitle, year };
     };
 
     const parseEpisodeName = (name) => {
@@ -332,7 +343,7 @@
         /\bS(\d{1,2})\s*E(\d{1,3})(?:[.\s_-]?v(\d+))?\b/i,
         /\b(\d{1,2})x(\d{1,3})\b/i,
         /第\s*(\d{1,3})\s*[集话話]/i,
-        /\bEP?\s*(\d{1,3})\b/i,
+        /\bEP?\s*(\d{1,3})(?:v\d+)?\b/i,
       ];
       for (const pattern of patterns) {
         const match = base.match(pattern);
@@ -354,10 +365,13 @@
         };
       }
 
-      // 模式 5：方括号纯数字 [xx]，季数由标题中 X<数字> 标记提取
-      const bracketMatch = base.match(/\[(\d{1,3})\]/);
+      // 模式 5：方括号集数 [NN] / [NNvN] / [NN 标记] / [NNvN 标记]
+      // 标记可为 END、Fin、Final、完结、最终回 等表示最后一集的任意词，季数由 X<数字> 标记提取
+      // trailing 标记前必须有分隔符，避免 [1080P] 等技术标记误匹配
+      const bracketMatch = base.match(/\[(\d{1,3})(?:v(\d+))?(?:[._\s-]+[^\]\[]+)?\]/);
       if (bracketMatch) {
         const episode = Number(bracketMatch[1]);
+        const version = bracketMatch[2] ? Number(bracketMatch[2]) : undefined;
         const titlePart = base.slice(0, bracketMatch.index);
         const seasonMatch = titlePart.match(/\bX\s*(\d{1,2})\b/i);
         const season = seasonMatch ? Number(seasonMatch[1]) : 1;
@@ -371,6 +385,7 @@
           season: Number.isFinite(season) && season >= 0 ? season : 1,
           episode,
           title,
+          version,
         };
       }
 
@@ -588,6 +603,24 @@
       return ` [tmdbid-${item.id}]`;
     };
 
+    // 根据"嵌入 TMDB ID"总开关与文件模式，判断是否为视频/字幕文件嵌入 TMDB ID 标签
+    // 文件夹始终遵循 embedTmdbId 总开关（structuringShowDir 直接使用）；
+    // 文件是否嵌入由 tmdbIdFileMode 与当前模式（movie/tv）共同决定：
+    //   files-both        -> 电影+电视剧文件均嵌入
+    //   files-neither     -> 仅文件夹，文件均不嵌入
+    //   files-movie-only  -> 仅电影文件嵌入
+    //   files-tv-only     -> 仅电视剧文件嵌入
+    const shouldEmbedTmdbIdInFile = (options, currentMode) => {
+      if (!options.embedTmdbId) return false;
+      switch (options.tmdbIdFileMode) {
+        case "files-neither": return false;
+        case "files-movie-only": return currentMode === "movie";
+        case "files-tv-only": return currentMode === "tv";
+        case "files-both":
+        default: return true;
+      }
+    };
+
     const tvEpisodeBaseName = (show, episode, season, episodeNumber, options = namingOptions()) => {
       const title = safeFilePart(effectiveTitle(show));
       const code = tvEpisodeCode(season, episodeNumber);
@@ -597,7 +630,7 @@
         if (episodeTitle) parts.push(episodeTitle);
       }
       let base = parts.join(" - ");
-      if (options.embedTmdbId) base += tmdbIdTag(show, true);
+      if (shouldEmbedTmdbIdInFile(options, "tv")) base += tmdbIdTag(show, true);
       return base;
     };
 
@@ -612,7 +645,7 @@
         return tvEpisodeBaseName(state.selectedItem, state.selectedEpisode, season, episode, options);
       }
       const yearPart = options.includeYear && year ? ` (${year})` : "";
-      const idTag = tmdbIdTag(state.selectedItem, options.embedTmdbId);
+      const idTag = tmdbIdTag(state.selectedItem, shouldEmbedTmdbIdInFile(options, "movie"));
       return `${title}${yearPart}${idTag}`;
     };
 
@@ -664,7 +697,12 @@
         const suffix = subBase.slice(originalVideoBase.length);
         return `${targetVideoBase}${suffix}.${subExt}`;
       }
-      return `${targetVideoBase}.${subExt}`;
+      // 回退：字幕与视频基名前缀不一致（如集数标记/规格括号不同、来自子目录按集匹配），
+      // 保留字幕最后一个点分片段（通常为语言代码 JPTC/JPSC/chs/cht 等），
+      // 避免多语言字幕改名为同一目标名（target.ass）导致冲突
+      const lastDotIdx = subBase.lastIndexOf(".");
+      const langSuffix = lastDotIdx > 0 ? subBase.slice(lastDotIdx) : "";
+      return `${targetVideoBase}${langSuffix}.${subExt}`;
     };
 
     const selectedFile = () =>
@@ -744,9 +782,14 @@
       const seasonFormat = seasonSelect
         ? (SEASON_DIR_FORMATS.includes(seasonSelect.value) ? seasonSelect.value : defaults.seasonDirFormat)
         : resolveEnumOption(STORAGE.seasonDirFormat, SEASON_DIR_FORMATS, defaults.seasonDirFormat);
+      const tmdbIdModeSelect = $(".ol-tmdb-tmdb-id-mode");
+      const tmdbIdFileMode = tmdbIdModeSelect
+        ? (TMDB_ID_FILE_MODES.includes(tmdbIdModeSelect.value) ? tmdbIdModeSelect.value : defaults.tmdbIdFileMode)
+        : resolveEnumOption(STORAGE.tmdbIdFileMode, TMDB_ID_FILE_MODES, defaults.tmdbIdFileMode);
       return {
         includeEpisodeTitle: boolFromDom(".ol-tmdb-include-episode-title", STORAGE.includeEpisodeTitle, "includeEpisodeTitle"),
         embedTmdbId: boolFromDom(".ol-tmdb-embed-tmdb-id", STORAGE.embedTmdbId, "embedTmdbId"),
+        tmdbIdFileMode,
         includeYear: boolFromDom(".ol-tmdb-include-year", STORAGE.includeYear, "includeYear"),
         seasonDirFormat: seasonFormat,
       };
@@ -2007,7 +2050,7 @@
           const selected = state.selectedItem?.id === item.id;
           const poster = buildImageUrl(item.poster_path, "w154");
           const original = state.mode === "tv" ? item.original_name : item.original_title;
-          const tmdbUrl = `https://www.themoviedb.org/${state.mode === "tv" ? "tv" : "movie"}/${item.id}`;
+          const tmdbUrl = `https://www.themoviedb.org/${state.mode === "tv" ? "tv" : "movie"}/${item.id}${state.mode === "tv" ? "/seasons" : ""}`;
           return `<div class="ol-tmdb-result" role="button" tabindex="0" data-id="${item.id}" data-selected="${selected}">
             ${poster ? `<img class="ol-tmdb-poster" alt="" src="${escapeHtml(poster)}">` : '<div class="ol-tmdb-poster"></div>'}
             <div>
@@ -2712,6 +2755,7 @@
             : `批量完成 ${success} 集；步骤成功 ${reportSummary.success}，跳过 ${reportSummary.skipped}`,
           finalFailed ? "error" : "ok",
         );
+        if (!finalFailed) closeModal();
       } catch (error) {
         const failedSteps = error.planStep ? [error.planStep] : activeSteps;
         failedSteps.forEach((step) => updateExecutionReport(report, step, "failed", error.message));
@@ -2855,6 +2899,7 @@
             : `${messages.join("，")}。步骤成功 ${reportSummary.success}，跳过 ${reportSummary.skipped}。当前目录没有可继续处理的视频`,
           "ok",
         );
+        closeModal();
       } catch (error) {
         const failedStep = error.planStep || activeStep;
         if (failedStep) {
@@ -3002,6 +3047,15 @@
                 <label class="ol-tmdb-check ol-tmdb-tv-only"><input class="ol-tmdb-include-episode-title" type="checkbox"> 包含集标题</label>
                 <label class="ol-tmdb-check"><input class="ol-tmdb-include-year" type="checkbox"> 包含年份</label>
                 <label class="ol-tmdb-check"><input class="ol-tmdb-embed-tmdb-id" type="checkbox"> 嵌入 TMDB ID</label>
+                <label class="ol-tmdb-image-size-field ol-tmdb-tmdb-id-mode-field">
+                  <span title="开启嵌入 TMDB ID 时，选择哪些文件嵌入（文件夹始终嵌入）">ID 文件</span>
+                  <select class="ol-tmdb-select ol-tmdb-tmdb-id-mode" title="选择哪些文件嵌入 TMDB ID（文件夹始终嵌入）">
+                    <option value="files-both">电影/电视剧文件</option>
+                    <option value="files-neither">仅文件夹</option>
+                    <option value="files-movie-only">仅电影文件</option>
+                    <option value="files-tv-only">仅电视剧文件</option>
+                  </select>
+                </label>
                 <label class="ol-tmdb-image-size-field">
                   <span>季目录</span>
                   <select class="ol-tmdb-select ol-tmdb-season-dir-format">
@@ -3142,6 +3196,10 @@
             .map((className) => namingOptionStorage.get(className))
             .find(Boolean);
           if (storageKey) localStorage.setItem(storageKey, input.checked ? "true" : "false");
+          if (input.classList.contains("ol-tmdb-embed-tmdb-id")) {
+            const tmdbIdModeSelect = $(".ol-tmdb-tmdb-id-mode", mask);
+            if (tmdbIdModeSelect) tmdbIdModeSelect.disabled = !input.checked;
+          }
           renderPreview();
         });
       });
@@ -3149,6 +3207,13 @@
         const value = event.target.value;
         if (SEASON_DIR_FORMATS.includes(value)) {
           localStorage.setItem(STORAGE.seasonDirFormat, value);
+          renderPreview();
+        }
+      });
+      $(".ol-tmdb-tmdb-id-mode", mask).addEventListener("change", (event) => {
+        const value = event.target.value;
+        if (TMDB_ID_FILE_MODES.includes(value)) {
+          localStorage.setItem(STORAGE.tmdbIdFileMode, value);
           renderPreview();
         }
       });
@@ -3182,6 +3247,11 @@
       $(".ol-tmdb-include-episode-title", mask).checked = resolveBoolOption(STORAGE.includeEpisodeTitle, defaults.includeEpisodeTitle);
       $(".ol-tmdb-include-year", mask).checked = resolveBoolOption(STORAGE.includeYear, defaults.includeYear);
       $(".ol-tmdb-embed-tmdb-id", mask).checked = resolveBoolOption(STORAGE.embedTmdbId, defaults.embedTmdbId);
+      const tmdbIdModeSelect = $(".ol-tmdb-tmdb-id-mode", mask);
+      if (tmdbIdModeSelect) {
+        tmdbIdModeSelect.value = resolveEnumOption(STORAGE.tmdbIdFileMode, TMDB_ID_FILE_MODES, defaults.tmdbIdFileMode);
+        tmdbIdModeSelect.disabled = !resolveBoolOption(STORAGE.embedTmdbId, defaults.embedTmdbId);
+      }
       $(".ol-tmdb-season-dir-format", mask).value = resolveEnumOption(STORAGE.seasonDirFormat, SEASON_DIR_FORMATS, defaults.seasonDirFormat);
       updateModeUi();
     };
