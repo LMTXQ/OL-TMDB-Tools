@@ -2415,34 +2415,48 @@
 
     const findOpenListRefreshControl = () => {
       const toolbar = $(".left-toolbar-in") || $(".left-toolbar");
-      if (!toolbar) return null;
       const selectors = [
         ".toolbar-refresh",
         '[data-tool="refresh"]',
         '[tips="refresh"]',
+        'svg[tips="refresh"]',
         '[aria-label="refresh"]',
         '[aria-label="Refresh"]',
         '[aria-label="刷新"]',
       ];
-      for (const selector of selectors) {
-        const candidate = $(selector, toolbar);
-        if (candidate && !candidate.closest?.(".ol-tmdb-button-wrap")) return candidate;
+      // 先在工具栏内查找，再兜底到整个文档（防止工具栏被遮挡或重渲染时找不到）
+      for (const root of [toolbar, document]) {
+        if (!root) continue;
+        for (const selector of selectors) {
+          const candidate = $(selector, root);
+          if (candidate && !candidate.closest?.(".ol-tmdb-button-wrap")) return candidate;
+        }
       }
       return null;
     };
 
     const triggerOpenListRefresh = () => {
       const control = findOpenListRefreshControl();
-      if (!control || typeof control.click !== "function") {
+      if (!control) {
         if ($(".left-toolbar-in") || $(".left-toolbar")) {
           addCompatibilityWarning("refresh-control", "无法识别 OpenList 内部刷新按钮，操作后仅使用文件 API 回读。");
         }
         return false;
       }
       try {
-        control.click();
+        // 用 MouseEvent 派发代替 click()：OpenList 刷新按钮是 <svg tips="refresh">，
+        // svg.click() 在部分浏览器下不是函数，且对 React 合成事件触发不可靠；
+        // dispatchEvent 派发冒泡的 click 事件能稳定触发 Hope UI 的 onClick
+        control.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, view: window }));
         return true;
       } catch {
+        // 兜底：尝试原生 click()
+        try {
+          if (typeof control.click === "function") {
+            control.click();
+            return true;
+          }
+        } catch {}
         addCompatibilityWarning("refresh-control-click", "OpenList 内部刷新按钮触发失败，已改用文件 API 回读。");
         return false;
       }
@@ -2615,6 +2629,17 @@
         state.selectedEpisode = null;
         if (state.mode === "tv" && isTvBatchActive()) {
           syncTvBatchRows();
+          // 工具栏「季」手动填的值优先于文件名解析出的季（解析错误或缺失时由用户兜底）
+          // 仅在「选中 TMDB 条目」时应用一次；之后改工具栏不再联动，需重新选中条目才生效
+          const toolbarSeason = positiveNumber($(".ol-tmdb-season")?.value);
+          if (toolbarSeason != null) {
+            state.tvBatchRows.forEach((row) => {
+              row.season = toolbarSeason;
+              row.episodeDetails = null; // 失效缓存，让下方按新季重新拉取
+              row.error = "";
+              row.result = "";
+            });
+          }
           const result = await fetchTvBatchEpisodes();
           render();
           setStatus(
