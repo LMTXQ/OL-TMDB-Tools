@@ -19,6 +19,8 @@
     const DEFAULT_TMDB_API_KEY = document.currentScript?.dataset?.tmdbApiKey || "";
     const SEASON_DIR_FORMATS = ["season-2digit", "s-2digit", "season-1digit"];
     const TMDB_ID_FILE_MODES = ["files-both", "files-neither", "files-movie-only", "files-tv-only"];
+    // 脚本版本号：修改此处即可全局更新对话框显示的版本标识
+    const SCRIPT_VERSION = "1.0.0";
     const DEFAULTS = {
       rename: true,
       structuring: false,
@@ -3018,7 +3020,7 @@
       mask.innerHTML = `
         <section class="ol-tmdb-modal" role="dialog" aria-modal="true" aria-labelledby="ol-tmdb-title">
           <header class="ol-tmdb-header">
-            <h2 class="ol-tmdb-title" id="ol-tmdb-title">TMDB 匹配</h2>
+            <h2 class="ol-tmdb-title" id="ol-tmdb-title">TMDB 匹配<span class="ol-tmdb-version">v${SCRIPT_VERSION}</span></h2>
             <button class="ol-tmdb-action ol-tmdb-close" type="button" data-keep-enabled="true">关闭</button>
           </header>
           <main class="ol-tmdb-body">
