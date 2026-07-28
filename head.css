@@ -431,6 +431,78 @@
     color: #fff;
   }
 
+  /* 【名】【夹】按钮触发的候选影视名列表（浮在搜索框下方，不撑开布局） */
+  .ol-tmdb-candidate-list {
+    display: none;
+    position: absolute;
+    top: 100%;
+    left: 0;
+    right: 0;
+    z-index: 20;
+    max-height: 240px;
+    overflow-y: auto;
+    margin-top: 4px;
+    padding: 4px;
+    background: var(--hope-colors-neutral1, #fff);
+    border: 1px solid var(--hope-colors-neutral5, #e8e8e8);
+    border-radius: 6px;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.12);
+  }
+
+  .ol-tmdb-candidate-list[data-open="true"] {
+    display: block;
+  }
+
+  .ol-tmdb-candidate-item {
+    display: block;
+    width: 100%;
+    padding: 6px 8px;
+    border: none;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+    border-radius: 4px;
+  }
+
+  .ol-tmdb-candidate-item:hover,
+  .ol-tmdb-candidate-item:focus-visible {
+    background: var(--hope-colors-primary3, #e6f0ff);
+    color: var(--hope-colors-primary10, #0958d9);
+  }
+
+  /* 字幕改名对照表（预览区内） */
+  .ol-tmdb-subtitle-preview {
+    margin-top: 6px;
+    padding-top: 6px;
+    border-top: 1px dashed var(--hope-colors-neutral5, #e8e8e8);
+  }
+
+  .ol-tmdb-sub-list {
+    margin-top: 4px;
+    max-height: 160px;
+    overflow-y: auto;
+  }
+
+  .ol-tmdb-sub-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 2px 0;
+    flex-wrap: wrap;
+  }
+
+  .ol-tmdb-sub-arrow {
+    color: var(--hope-colors-neutral8, #888);
+    flex-shrink: 0;
+  }
+
+  .ol-tmdb-sub-hint {
+    font-size: 12px;
+    color: var(--hope-colors-neutral8, #888);
+  }
+
   .ol-tmdb-code {
     font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
     word-break: break-all;
