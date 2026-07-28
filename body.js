@@ -2277,7 +2277,7 @@
       const modal = $(".ol-tmdb-modal");
       if (modal) modal.dataset.mode = state.mode;
       const title = $("#ol-tmdb-title");
-      if (title) title.textContent = `TMDB ${state.mode === "tv" ? "电视剧" : "电影"}匹配`;
+      if (title) title.innerHTML = `TMDB ${state.mode === "tv" ? "电视剧" : "电影"}匹配<span class="ol-tmdb-version">v${SCRIPT_VERSION}</span>`;
     };
 
     const formatSize = (value) => {
