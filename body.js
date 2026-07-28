@@ -746,6 +746,50 @@
       return joinPath(showDir, formatSeasonDir(season, options.seasonDirFormat));
     };
 
+    // 字幕语言后缀标准化映射（大小写不敏感）
+    // 单语言：sc/chs→zh-Hans, tc/cht→zh-Hant, jp/jpn→ja
+    // 中日双语组合（顺序无关，& / _ / 直接拼接均可）：
+    //   简中+日文→zh-Hans.scjp, 繁中+日文→zh-Hant.tcjp
+    const LANG_SINGLE_MAP = {
+      sc: "zh-Hans", chs: "zh-Hans",
+      tc: "zh-Hant", cht: "zh-Hant",
+      jp: "ja",      jpn: "ja",
+    };
+
+    const normalizeLangTag = (tag) => {
+      if (!tag) return "";
+      const lower = String(tag).toLowerCase();
+      // 1. 单语言直接映射
+      if (LANG_SINGLE_MAP[lower]) return LANG_SINGLE_MAP[lower];
+      // 2. 拼接型双语（无分隔符）：如 scjp / jpsc / tcjp / jptc
+      const concatMatch = lower.match(
+        /^(?:(sc|chs|tc|cht)(jp|jpn)|(jp|jpn)(sc|chs|tc|cht))$/,
+      );
+      if (concatMatch) {
+        const cn = concatMatch[1] || concatMatch[4];
+        const isSimplified = cn === "sc" || cn === "chs";
+        return isSimplified ? "zh-Hans.scjp" : "zh-Hant.tcjp";
+      }
+      // 3. & 或 _ 分隔型双语：如 JP&SC / sc_jp / cht&jpn / jpn_chs
+      const parts = lower.split(/[&_]/).map((s) => s.trim()).filter(Boolean);
+      if (parts.length >= 2) {
+        const hasSc = parts.some((p) => p === "sc" || p === "chs");
+        const hasTc = parts.some((p) => p === "tc" || p === "cht");
+        const hasJp = parts.some((p) => p === "jp" || p === "jpn");
+        if (hasJp && hasSc) return "zh-Hans.scjp";
+        if (hasJp && hasTc) return "zh-Hant.tcjp";
+      }
+      // 4. 不匹配，原样返回
+      return tag;
+    };
+
+    // 对多段后缀逐段标准化，不匹配的段（如 1080p、AVC）保留
+    const normalizeSubtitleSuffix = (suffix) =>
+      suffix
+        .split(".")
+        .map((seg) => normalizeLangTag(seg))
+        .join(".");
+
     const subtitleTargetName = (originalVideoName, targetVideoName, subtitleName) => {
       const originalVideoBase = basename(originalVideoName);
       const targetVideoBase = basename(targetVideoName);
@@ -753,17 +797,23 @@
       const subBase = basename(subtitleName);
       const subBaseLower = normalizeName(subBase);
       const videoBaseLower = normalizeName(originalVideoBase);
+      // 分支1：视频名未变 → 原样返回（不标准化）
       if (originalVideoBase === targetVideoBase) return subtitleName;
+      // 分支2：字幕基名 == 视频基名（无语言后缀）→ 不标准化
       if (subBaseLower === videoBaseLower) return `${targetVideoBase}.${subExt}`;
+      // 分支3：字幕基名以视频基名开头 → 标准化 suffix 各段（如 .1080p.chs → .1080p.zh-Hans）
       if (subBaseLower.startsWith(`${videoBaseLower}.`)) {
         const suffix = subBase.slice(originalVideoBase.length);
-        return `${targetVideoBase}${suffix}.${subExt}`;
+        return `${targetVideoBase}${normalizeSubtitleSuffix(suffix)}.${subExt}`;
       }
-      // 回退：字幕与视频基名前缀不一致（如集数标记/规格括号不同、来自子目录按集匹配），
-      // 保留字幕最后一个点分片段（通常为语言代码 JPTC/JPSC/chs/cht 等），
+      // 分支4：回退 → 标准化最后一个点分段（语言代码）
+      // 字幕与视频基名前缀不一致（如集数标记/规格括号不同、来自子目录按集匹配），
+      // 保留字幕最后一个点分片段（通常为语言代码 JPTC/JPSC/chs/cht 等）并标准化，
       // 避免多语言字幕改名为同一目标名（target.ass）导致冲突
       const lastDotIdx = subBase.lastIndexOf(".");
-      const langSuffix = lastDotIdx > 0 ? subBase.slice(lastDotIdx) : "";
+      const langSeg = lastDotIdx > 0 ? subBase.slice(lastDotIdx + 1) : "";
+      const normalized = langSeg ? normalizeLangTag(langSeg) : "";
+      const langSuffix = normalized ? `.${normalized}` : "";
       return `${targetVideoBase}${langSuffix}.${subExt}`;
     };
 
@@ -792,7 +842,7 @@
       state.writeContentBypass = false;
       state.subtitleScanCache = new Map();
       state.customTitle = "";
-      state.titleCandidates = { source: "", list: [], index: 0 };
+      hideTitleCandidateList();
     };
 
     const ensureLoadedDirectory = () => {
@@ -2236,11 +2286,35 @@
       const { videoName } = rowPlan.target;
       const structuringEnabled = Boolean($(".ol-tmdb-do-structuring")?.checked);
       const targetDir = structuringEnabled ? structuringTargetDir() : "";
+      // 字幕改名对照：同步从当前目录扫描（与执行时「先当前目录」逻辑一致）
+      const sourceName = rowPlan.sourceName;
+      const localSubs = findSubtitleFilesFor(sourceName);
+      const subRows = localSubs
+        .map((sub) => {
+          const subTarget = subtitleTargetName(sourceName, videoName, sub.name);
+          if (subTarget === sub.name) return "";
+          return `<div class="ol-tmdb-sub-row">
+            <span class="ol-tmdb-code">${escapeHtml(sub.name)}</span>
+            <span class="ol-tmdb-sub-arrow">→</span>
+            <span class="ol-tmdb-code">${escapeHtml(subTarget)}</span>
+          </div>`;
+        })
+        .filter(Boolean)
+        .join("");
+      const subtitlePreviewHtml = subRows
+        ? `<div class="ol-tmdb-subtitle-preview">
+            <strong>字幕改名</strong>
+            <div class="ol-tmdb-sub-list">${subRows}</div>
+          </div>`
+        : `<div class="ol-tmdb-subtitle-preview">
+            <span class="ol-tmdb-sub-hint">字幕如在子目录，执行时自动扫描并改名</span>
+          </div>`;
       preview.innerHTML = `
         ${renderPlanSummary(plan)}
         <div><strong>原文件</strong> <span class="ol-tmdb-code">${escapeHtml(file.name)}</span></div>
         <div><strong>新文件</strong> <span class="ol-tmdb-code">${escapeHtml(videoName)}</span></div>
         ${targetDir ? `<div><strong>目标目录</strong> <span class="ol-tmdb-code">${escapeHtml(targetDir)}</span></div>` : ""}
+        ${subtitlePreviewHtml}
         <div class="ol-tmdb-plan">${rowPlan.steps.map(renderPlanStep).join("")}</div>
       `;
     };
@@ -2595,7 +2669,23 @@
       else doSearch();
     };
 
+    const hideTitleCandidateList = () => {
+      const listEl = $(".ol-tmdb-candidate-list");
+      if (listEl) {
+        listEl.dataset.open = "false";
+        listEl.innerHTML = "";
+      }
+      state.titleCandidates = { source: "", list: [], index: 0 };
+    };
+
     const applyTitleCandidate = (source) => {
+      const listEl = $(".ol-tmdb-candidate-list");
+      if (!listEl) return;
+      // 同源且当前已展示 → 收起（toggle）；异源 → 直接替换内容
+      if (state.titleCandidates.source === source && listEl.dataset.open === "true") {
+        hideTitleCandidateList();
+        return;
+      }
       const sourceName = source === "file" ? selectedFile()?.name : currentFolderName();
       if (!sourceName) {
         setStatus(source === "file" ? "请先选择一个视频文件" : "当前目录无文件夹名", "error");
@@ -2606,18 +2696,12 @@
         setStatus(`无法从${source === "file" ? "文件名" : "文件夹名"}解析出影视名`, "error");
         return;
       }
-      const prev = state.titleCandidates;
-      const sameSource = prev.source === source;
-      const sameList = sameSource && prev.list.length === list.length &&
-        prev.list.every((v, i) => v === list[i]);
-      const index = sameList ? (prev.index + 1) % list.length : 0;
-      state.titleCandidates = { source, list, index };
-      const queryInput = $(".ol-tmdb-query");
-      if (queryInput) queryInput.value = list[index];
-      setStatus(
-        list.length > 1 ? `已填入候选 ${index + 1}/${list.length}：${list[index]}` : `已填入：${list[index]}`,
-        "ok",
-      );
+      state.titleCandidates = { source, list, index: 0 };
+      listEl.innerHTML = list
+        .map((c, i) => `<button type="button" class="ol-tmdb-candidate-item" data-index="${i}">${escapeHtml(c)}</button>`)
+        .join("");
+      listEl.dataset.open = "true";
+      setStatus(`已从${source === "file" ? "文件名" : "文件夹名"}解析出 ${list.length} 个候选，请点选`, "ok");
     };
 
     const selectItem = async (id) => {
@@ -3093,6 +3177,7 @@
                     </span>
                   </span>
                   <input class="ol-tmdb-input ol-tmdb-query" type="text">
+                  <div class="ol-tmdb-candidate-list" data-open="false"></div>
                 </label>
                 <label class="ol-tmdb-field ol-tmdb-movie-only" style="flex: 0.6">
                   <span class="ol-tmdb-label">年份</span>
@@ -3259,6 +3344,18 @@
       });
       $(".ol-tmdb-query-title-file", mask).addEventListener("click", () => applyTitleCandidate("file"));
       $(".ol-tmdb-query-title-dir", mask).addEventListener("click", () => applyTitleCandidate("dir"));
+      // 候选项点击：填入搜索框并收起列表（事件委托，列表内容动态生成）
+      $(".ol-tmdb-candidate-list", mask).addEventListener("click", (event) => {
+        const item = event.target.closest(".ol-tmdb-candidate-item");
+        if (!item) return;
+        const idx = Number(item.dataset.index);
+        const value = state.titleCandidates.list[idx];
+        if (value == null) return;
+        const queryInput = $(".ol-tmdb-query");
+        if (queryInput) queryInput.value = value;
+        hideTitleCandidateList();
+        setStatus(`已填入：${value}`, "ok");
+      });
       $(".ol-tmdb-custom-title", mask).addEventListener("input", (event) => {
         state.customTitle = event.target.value;
         renderPreview();
