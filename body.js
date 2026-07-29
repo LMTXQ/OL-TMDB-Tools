@@ -20,7 +20,7 @@
     const SEASON_DIR_FORMATS = ["season-2digit", "s-2digit", "season-1digit"];
     const TMDB_ID_FILE_MODES = ["files-both", "files-neither", "files-movie-only", "files-tv-only"];
     // 脚本版本号：修改此处即可全局更新对话框显示的版本标识
-    const SCRIPT_VERSION = "Bate_V1.0.0";
+    const SCRIPT_VERSION = "Bate_V1.0.0.2026_07_29";
     const DEFAULTS = {
       rename: true,
       structuring: false,
@@ -132,6 +132,8 @@
       customTitle: "",
       searchMode: "keyword",
       titleCandidates: { source: "", list: [], index: 0 },
+      excludedSubtitles: new Set(),
+      cachedSubtitles: new Map(),
     };
     const tmdbSessionCache = new Map();
     const tmdbInflightRequests = new Map();
@@ -293,6 +295,47 @@
       return deduplicateSubtitlesByVersion(results);
     };
 
+    // 扫描全部字幕（当前目录 + 所有子目录，不短路），用于预览和取消选中
+    const scanAllSubtitles = async (videoName) => {
+      const results = [];
+      const local = findSubtitleFilesFor(videoName);
+      for (const sub of local) results.push({ name: sub.name, dir: state.currentPath });
+      const subdirs = state.entries.filter((entry) => entry.is_dir);
+      const videoEpisode = parseEpisodeName(videoName);
+      if (subdirs.length && videoEpisode) {
+        const subdirEntriesList = await Promise.all(
+          subdirs.map(async (dir) => {
+            const subdirPath = joinPath(state.currentPath, dir.name);
+            if (state.subtitleScanCache.has(subdirPath)) {
+              return { dir: subdirPath, entries: state.subtitleScanCache.get(subdirPath) };
+            }
+            try {
+              const data = await fsList(subdirPath);
+              const entries = Array.isArray(data?.content) ? data.content : [];
+              state.subtitleScanCache.set(subdirPath, entries);
+              return { dir: subdirPath, entries };
+            } catch (error) {
+              return { dir: subdirPath, entries: [] };
+            }
+          })
+        );
+        for (const { dir, entries } of subdirEntriesList) {
+          const subtitles = entries.filter(isSubtitle);
+          if (!subtitles.length) continue;
+          const matched = matchSubtitlesByEpisode(videoName, subtitles);
+          for (const sub of matched) results.push({ name: sub.name, dir });
+        }
+      }
+      return deduplicateSubtitlesByVersion(results);
+    };
+
+    // 获取生效字幕：优先用缓存（含子目录全量），否则 findSubtitleFilesRecursive；过滤排除项
+    const getEffectiveSubtitles = async (videoSourceName) => {
+      const cached = state.cachedSubtitles.get(videoSourceName);
+      const subs = cached || (await findSubtitleFilesRecursive(videoSourceName));
+      return subs.filter((sub) => !state.excludedSubtitles.has(`${sub.dir}::${sub.name}`));
+    };
+
     const deduplicateSubtitlesByVersion = (subtitles) => {
       const groups = new Map();
       for (const sub of subtitles) {
@@ -319,7 +362,7 @@
     const normalizeName = (name) => String(name || "").toLowerCase();
 
     const parseMovieName = (name) => {
-      const base = basename(name);
+      const base = basename(name).replace(/【/g, "[").replace(/】/g, "]");
       const yearMatch = base.match(/(?:^|[.\s_\-[({])((?:19|20)\d{2})(?:$|[.\s_\-\])}])/);
       const year = yearMatch ? yearMatch[1] : "";
       const beforeYear = yearMatch ? base.slice(0, yearMatch.index) : base;
@@ -339,8 +382,44 @@
       return { title: title || fallbackTitle, year };
     };
 
+    // 罗马数字季数解析（I=1..XX=20，超出范围返回 null）
+    const parseRomanSeason = (s) => {
+      const map = { I: 1, V: 5, X: 10, L: 50 };
+      let n = 0;
+      const upper = s.toUpperCase();
+      for (let i = 0; i < upper.length; i++) {
+        const cur = map[upper[i]];
+        if (cur === undefined) return null;
+        const next = map[upper[i + 1]];
+        if (next && cur < next) { n += next - cur; i++; }
+        else { n += cur; }
+      }
+      return n >= 1 && n <= 20 ? n : null;
+    };
+
+    // 从文本提取季数标记：S<数字> / X<数字> / Season <数字|罗马> / Part <数字|罗马>
+    // 返回 { season, startIndex, endIndex } 或 null
+    const extractSeasonFromText = (text) => {
+      let m = text.match(/\b[SX]\s*(\d{1,2})\b/i);
+      if (m) return { season: Number(m[1]), startIndex: m.index, endIndex: m.index + m[0].length };
+      m = text.match(/\b(?:Season|Part)\s*(\d{1,2})\b/i);
+      if (m) return { season: Number(m[1]), startIndex: m.index, endIndex: m.index + m[0].length };
+      m = text.match(/\b(?:Season|Part)\s*([IVXLCDM]+)\b/i);
+      if (m) {
+        const n = parseRomanSeason(m[1]);
+        if (n) return { season: n, startIndex: m.index, endIndex: m.index + m[0].length };
+      }
+      // 4. 纯罗马数字（2 字符以上，避免单词 I 误匹配；优先级最低）
+      m = text.match(/\b([IVXLCDM]{2,})\b/);
+      if (m) {
+        const n = parseRomanSeason(m[1]);
+        if (n) return { season: n, startIndex: m.index, endIndex: m.index + m[0].length };
+      }
+      return null;
+    };
+
     const parseEpisodeName = (name) => {
-      const base = basename(name);
+      const base = basename(name).replace(/【/g, "[").replace(/】/g, "]");
       const patterns = [
         /\bS(\d{1,2})\s*E(\d{1,3})(?:[.\s_-]?v(\d+))?\b/i,
         /\b(\d{1,2})x(\d{1,3})\b/i,
@@ -367,6 +446,28 @@
         };
       }
 
+      // 模式 4.5：#NN 集数（井号格式），季数由 S<数字>/X<数字>/Season<数字|罗马> 提取
+      const hashMatch = base.match(/#\s*(\d{1,3})(?:v(\d+))?\b/);
+      if (hashMatch) {
+        const episode = Number(hashMatch[1]);
+        const version = hashMatch[2] ? Number(hashMatch[2]) : undefined;
+        const titlePart = base.slice(0, hashMatch.index);
+        const seasonInfo = extractSeasonFromText(titlePart);
+        const season = seasonInfo ? seasonInfo.season : 1;
+        const title = titlePart
+          .replace(/\[[^\]]*]/g, " ")
+          .replace(CLEANUP_TECHNICAL_PATTERN, " ")
+          .replace(/[._-]+/g, " ")
+          .replace(/\s+/g, " ")
+          .trim();
+        return {
+          season: Number.isFinite(season) && season >= 0 ? season : 1,
+          episode,
+          title,
+          version,
+        };
+      }
+
       // 模式 5：方括号集数 [NN] / [NNvN] / [NN 标记] / [NNvN 标记]
       // 标记可为 END、Fin、Final、完结、最终回 等表示最后一集的任意词，季数由 X<数字> 标记提取
       // trailing 标记前必须有分隔符，避免 [1080P] 等技术标记误匹配
@@ -375,8 +476,8 @@
         const episode = Number(bracketMatch[1]);
         const version = bracketMatch[2] ? Number(bracketMatch[2]) : undefined;
         const titlePart = base.slice(0, bracketMatch.index);
-        const seasonMatch = titlePart.match(/\bX\s*(\d{1,2})\b/i);
-        const season = seasonMatch ? Number(seasonMatch[1]) : 1;
+        const seasonInfo = extractSeasonFromText(titlePart);
+        const season = seasonInfo ? seasonInfo.season : 1;
         const title = titlePart
           .replace(/\[([^\]]*)\]/g, " $1 ")
           .replace(CLEANUP_TECHNICAL_PATTERN, " ")
@@ -399,14 +500,14 @@
         .replace(/\s+/g, " ")
         .trim();
       if (stripped) {
-        const seasonMatch = stripped.match(/\bX\s*(\d{1,2})\b/i);
-        const season = seasonMatch ? Number(seasonMatch[1]) : 1;
-        const searchStart = seasonMatch ? seasonMatch.index + seasonMatch[0].length : 0;
+        const seasonInfo = extractSeasonFromText(stripped);
+        const season = seasonInfo ? seasonInfo.season : 1;
+        const searchStart = seasonInfo ? seasonInfo.endIndex : 0;
         const searchText = stripped.slice(searchStart);
         const episodeMatch = searchText.match(/(?:^|[\s\-_])(\d{1,3})(?:[\s\-_]|$)/);
         if (episodeMatch) {
           const episode = Number(episodeMatch[1]);
-          const titleEnd = seasonMatch ? seasonMatch.index : searchStart + episodeMatch.index;
+          const titleEnd = seasonInfo ? seasonInfo.startIndex : searchStart + episodeMatch.index;
           const title = stripped
             .slice(0, titleEnd)
             .replace(/[._-]+/g, " ")
@@ -484,7 +585,7 @@
 
     const extractTitleCandidates = (name) => {
       const normalizedName = VIDEO_EXTS.has(extname(name)) ? name : `${name}.mkv`;
-      const base = basename(normalizedName);
+      const base = basename(normalizedName).replace(/【/g, "[").replace(/】/g, "]");
       const seen = new Set();
       // 候选至少需含一个字母（拉丁 / CJK），用于过滤纯标点 / 纯数字残留（如 "-"、"01-12"）
       const hasLetter = (s) => /[a-zA-Z\u3400-\u9fff\u3040-\u30ff\uac00-\ud7af]/.test(String(s || ""));
@@ -841,6 +942,8 @@
       state.write = false;
       state.writeContentBypass = false;
       state.subtitleScanCache = new Map();
+      state.excludedSubtitles = new Set();
+      state.cachedSubtitles = new Map();
       state.customTitle = "";
       hideTitleCandidateList();
     };
@@ -2189,6 +2292,43 @@
       });
     };
 
+    // 批量模式字幕预览区（按视频分组，带 checkbox 和来源标签）
+    const renderBatchSubtitlePreview = (rows, plan) => {
+      const allSubRows = [];
+      for (const row of rows) {
+        const rowPlan = plan.rows.find((item) => item.row === row);
+        if (!rowPlan || !rowPlan.target?.videoName || rowPlan.row.error) continue;
+        const sourceName = rowPlan.sourceName;
+        const cached = state.cachedSubtitles.get(sourceName);
+        const subs = cached
+          ? cached
+          : findSubtitleFilesFor(sourceName).map((sub) => ({ name: sub.name, dir: state.currentPath }));
+        for (const sub of subs) {
+          const subTarget = subtitleTargetName(sourceName, rowPlan.target.videoName, sub.name);
+          if (subTarget === sub.name) continue;
+          const key = `${sub.dir}::${sub.name}`;
+          const checked = state.excludedSubtitles.has(key) ? "" : "checked";
+          const sourceLabel = sub.dir === state.currentPath ? "当前" : sub.dir.replace(state.currentPath, "").replace(/^\//, "") || sub.dir;
+          allSubRows.push(`<div class="ol-tmdb-sub-row">
+            <label class="ol-tmdb-sub-check"><input type="checkbox" ${checked} data-sub-key="${escapeHtml(key)}"></label>
+            <span class="ol-tmdb-sub-src">${escapeHtml(sourceLabel)}</span>
+            <span class="ol-tmdb-code">${escapeHtml(sub.name)}</span>
+            <span class="ol-tmdb-sub-arrow">→</span>
+            <span class="ol-tmdb-code">${escapeHtml(subTarget)}</span>
+          </div>`);
+        }
+      }
+      const hasCached = rows.some((row) => {
+        const rp = plan.rows.find((item) => item.row === row);
+        return rp && state.cachedSubtitles.has(rp.sourceName);
+      });
+      const scanText = hasCached ? "重新扫描全部字幕" : "扫描全部字幕";
+      return `<div class="ol-tmdb-subtitle-preview">
+        <div class="ol-tmdb-sub-head"><strong>字幕改名</strong><button class="ol-tmdb-action ol-tmdb-scan-subs" type="button">${scanText}</button></div>
+        ${allSubRows.length ? `<div class="ol-tmdb-sub-list">${allSubRows.join("")}</div>` : '<span class="ol-tmdb-sub-hint">无可改名字幕，或点击上方按钮扫描子目录</span>'}
+      </div>`;
+    };
+
     const renderBatchPreview = (preview) => {
       syncTvBatchRows();
       if (!state.selectedNames.length) {
@@ -2248,9 +2388,33 @@
             </div>`;
           }).join("")}
         </div>
+        ${renderBatchSubtitlePreview(rows, plan)}
       `;
       bindBatchOverviewActions(preview);
       $(".ol-tmdb-update-batch", preview)?.addEventListener("click", hydrateTvBatchEpisodes);
+      // 字幕 checkbox 切换 + 扫描全部字幕按钮
+      preview.querySelectorAll(".ol-tmdb-sub-check input").forEach((cb) => {
+        cb.addEventListener("change", () => {
+          const key = cb.dataset.subKey;
+          if (cb.checked) state.excludedSubtitles.delete(key);
+          else state.excludedSubtitles.add(key);
+          renderPreview();
+        });
+      });
+      $(".ol-tmdb-scan-subs", preview)?.addEventListener("click", async () => {
+        const btn = $(".ol-tmdb-scan-subs", preview);
+        if (btn) { btn.disabled = true; btn.textContent = "扫描中..."; }
+        try {
+          for (const row of rows) {
+            const rp = plan.rows.find((item) => item.row === row);
+            if (!rp || !rp.target?.videoName || rp.row.error) continue;
+            const subs = await scanAllSubtitles(rp.sourceName);
+            state.cachedSubtitles.set(rp.sourceName, subs);
+          }
+        } finally {
+          renderPreview();
+        }
+      });
       preview.querySelectorAll(".ol-tmdb-batch-input").forEach((input) => {
         input.addEventListener("change", () => {
           updateBatchInput(input);
@@ -2286,14 +2450,23 @@
       const { videoName } = rowPlan.target;
       const structuringEnabled = Boolean($(".ol-tmdb-do-structuring")?.checked);
       const targetDir = structuringEnabled ? structuringTargetDir() : "";
-      // 字幕改名对照：同步从当前目录扫描（与执行时「先当前目录」逻辑一致）
+      // 字幕改名对照：优先用扫描缓存（含子目录），否则同步取当前目录
       const sourceName = rowPlan.sourceName;
-      const localSubs = findSubtitleFilesFor(sourceName);
+      const cachedSubs = state.cachedSubtitles.get(sourceName);
+      const localSubs = cachedSubs
+        ? cachedSubs
+        : findSubtitleFilesFor(sourceName).map((sub) => ({ name: sub.name, dir: state.currentPath }));
+      const hasSubs = localSubs.length > 0;
       const subRows = localSubs
         .map((sub) => {
           const subTarget = subtitleTargetName(sourceName, videoName, sub.name);
           if (subTarget === sub.name) return "";
+          const key = `${sub.dir}::${sub.name}`;
+          const checked = state.excludedSubtitles.has(key) ? "" : "checked";
+          const sourceLabel = sub.dir === state.currentPath ? "当前" : sub.dir.replace(state.currentPath, "").replace(/^\//, "") || sub.dir;
           return `<div class="ol-tmdb-sub-row">
+            <label class="ol-tmdb-sub-check"><input type="checkbox" ${checked} data-sub-key="${escapeHtml(key)}"></label>
+            <span class="ol-tmdb-sub-src">${escapeHtml(sourceLabel)}</span>
             <span class="ol-tmdb-code">${escapeHtml(sub.name)}</span>
             <span class="ol-tmdb-sub-arrow">→</span>
             <span class="ol-tmdb-code">${escapeHtml(subTarget)}</span>
@@ -2301,13 +2474,15 @@
         })
         .filter(Boolean)
         .join("");
-      const subtitlePreviewHtml = subRows
+      const scanBtnText = cachedSubs ? "重新扫描子目录字幕" : "扫描子目录字幕";
+      const subtitlePreviewHtml = hasSubs
         ? `<div class="ol-tmdb-subtitle-preview">
-            <strong>字幕改名</strong>
-            <div class="ol-tmdb-sub-list">${subRows}</div>
+            <div class="ol-tmdb-sub-head"><strong>字幕改名</strong><button class="ol-tmdb-action ol-tmdb-scan-subs" type="button">${scanBtnText}</button></div>
+            <div class="ol-tmdb-sub-list">${subRows || '<span class="ol-tmdb-sub-hint">无可改名字幕</span>'}</div>
           </div>`
         : `<div class="ol-tmdb-subtitle-preview">
-            <span class="ol-tmdb-sub-hint">字幕如在子目录，执行时自动扫描并改名</span>
+            <div class="ol-tmdb-sub-head"><strong>字幕改名</strong><button class="ol-tmdb-action ol-tmdb-scan-subs" type="button">${scanBtnText}</button></div>
+            <span class="ol-tmdb-sub-hint">字幕如在子目录，点击上方按钮扫描</span>
           </div>`;
       preview.innerHTML = `
         ${renderPlanSummary(plan)}
@@ -2317,6 +2492,25 @@
         ${subtitlePreviewHtml}
         <div class="ol-tmdb-plan">${rowPlan.steps.map(renderPlanStep).join("")}</div>
       `;
+      // 字幕 checkbox 切换 + 扫描子目录字幕按钮
+      preview.querySelectorAll(".ol-tmdb-sub-check input").forEach((cb) => {
+        cb.addEventListener("change", () => {
+          const key = cb.dataset.subKey;
+          if (cb.checked) state.excludedSubtitles.delete(key);
+          else state.excludedSubtitles.add(key);
+          renderPreview();
+        });
+      });
+      $(".ol-tmdb-scan-subs", preview)?.addEventListener("click", async () => {
+        const btn = $(".ol-tmdb-scan-subs", preview);
+        if (btn) { btn.disabled = true; btn.textContent = "扫描中..."; }
+        try {
+          const subs = await scanAllSubtitles(sourceName);
+          state.cachedSubtitles.set(sourceName, subs);
+        } finally {
+          renderPreview();
+        }
+      });
     };
 
     const render = () => {
@@ -2351,7 +2545,7 @@
       const modal = $(".ol-tmdb-modal");
       if (modal) modal.dataset.mode = state.mode;
       const title = $("#ol-tmdb-title");
-      if (title) title.innerHTML = `TMDB ${state.mode === "tv" ? "电视剧" : "电影"}匹配<span class="ol-tmdb-version">v${SCRIPT_VERSION}</span>`;
+      if (title) title.innerHTML = `TMDB ${state.mode === "tv" ? "电视剧" : "电影"}匹配<span class="ol-tmdb-version">${SCRIPT_VERSION}</span>`;
     };
 
     const formatSize = (value) => {
@@ -2825,7 +3019,7 @@
             const subRenameGroups = new Map();
             for (const rowPlan of plan.rows) {
               if (!rowPlan.row._renamed || rowPlan.row._renamed === rowPlan.sourceName) continue;
-              const subtitles = await findSubtitleFilesRecursive(rowPlan.sourceName);
+              const subtitles = await getEffectiveSubtitles(rowPlan.sourceName);
               subtitles.forEach((sub) => {
                 const subTarget = subtitleTargetName(rowPlan.sourceName, rowPlan.row._renamed, sub.name);
                 if (subTarget !== sub.name) {
@@ -2861,7 +3055,7 @@
             const videoGroup = moveGroups.get(seasonDir) || { srcDir: state.currentPath, names: [] };
             videoGroup.names.push(moveName);
             moveGroups.set(seasonDir, videoGroup);
-            const subtitles = await findSubtitleFilesRecursive(rowPlan.sourceName);
+            const subtitles = await getEffectiveSubtitles(rowPlan.sourceName);
             subtitles.forEach((sub) => {
               const subMoveName = options.rename
                 ? subtitleTargetName(rowPlan.sourceName, rowPlan.row._renamed || rowPlan.sourceName, sub.name)
@@ -3001,7 +3195,7 @@
         if (options.structuring) {
           const targetDir = structuringTargetDir();
           if (options.rename && renameStep?.run) {
-            const subtitles = await findSubtitleFilesRecursive(oldName);
+            const subtitles = await getEffectiveSubtitles(oldName);
             const subRenameGroups = new Map();
             subtitles.forEach((sub) => {
               const subTarget = subtitleTargetName(oldName, newVideoName, sub.name);
@@ -3032,7 +3226,7 @@
 
           const moveStep = rowPlan.steps.find((step) => step.type === "move");
           if (moveStep?.run) {
-            const subtitles = await findSubtitleFilesRecursive(oldName);
+            const subtitles = await getEffectiveSubtitles(oldName);
             const moveGroups = new Map();
             const videoGroup = moveGroups.get(state.currentPath) || [];
             videoGroup.push(moveStep.name);
