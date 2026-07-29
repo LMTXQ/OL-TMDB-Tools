@@ -20,7 +20,7 @@
     const SEASON_DIR_FORMATS = ["season-2digit", "s-2digit", "season-1digit"];
     const TMDB_ID_FILE_MODES = ["files-both", "files-neither", "files-movie-only", "files-tv-only"];
     // 脚本版本号：修改此处即可全局更新对话框显示的版本标识
-    const SCRIPT_VERSION = "1.0.0";
+    const SCRIPT_VERSION = "Bate_V1.0.0";
     const DEFAULTS = {
       rename: true,
       structuring: false,
@@ -3191,7 +3191,10 @@
                   <span class="ol-tmdb-label">集</span>
                   <input class="ol-tmdb-input ol-tmdb-episode" type="text" inputmode="numeric">
                 </label>
-                <button class="ol-tmdb-action ol-tmdb-search" type="button" data-primary="true" style="align-self: end">搜索</button>
+                <div class="ol-tmdb-search-group">
+                  <button type="button" class="ol-tmdb-tmdb-link" title="跳转到 TMDB 官网首页" aria-label="跳转到 TMDB 官网首页">TMDB</button>
+                  <button class="ol-tmdb-action ol-tmdb-search" type="button" data-primary="true">搜索</button>
+                </div>
               </div>
               <div class="ol-tmdb-list">
                 <div class="ol-tmdb-results"></div>
@@ -3344,6 +3347,10 @@
       });
       $(".ol-tmdb-query-title-file", mask).addEventListener("click", () => applyTitleCandidate("file"));
       $(".ol-tmdb-query-title-dir", mask).addEventListener("click", () => applyTitleCandidate("dir"));
+      // [TMDB] 按钮：新窗口跳转到 TMDB 官网首页
+      $(".ol-tmdb-tmdb-link", mask).addEventListener("click", () => {
+        window.open("https://www.themoviedb.org/", "_blank", "noopener,noreferrer");
+      });
       // 候选项点击：填入搜索框并收起列表（事件委托，列表内容动态生成）
       $(".ol-tmdb-candidate-list", mask).addEventListener("click", (event) => {
         const item = event.target.closest(".ol-tmdb-candidate-item");
