@@ -408,6 +408,36 @@
     color: var(--hope-colors-primary9, #1677ff);
   }
 
+  /* 搜索按钮上方的 [TMDB] 跳转按钮（与 [名][夹] 视觉一致，宽度自适应） */
+  .ol-tmdb-search-group {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    align-self: end;
+    gap: 4px;
+  }
+
+  .ol-tmdb-tmdb-link {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    height: 20px;
+    border: 1px solid var(--hope-colors-neutral6, #d9d9d9);
+    border-radius: 4px;
+    background: transparent;
+    color: var(--hope-colors-neutral11, #555);
+    font-size: 13px;
+    line-height: 1;
+    padding: 0 6px;
+    cursor: pointer;
+    transition: border-color 0.15s ease, color 0.15s ease;
+  }
+
+  .ol-tmdb-tmdb-link:hover {
+    border-color: var(--hope-colors-primary9, #1677ff);
+    color: var(--hope-colors-primary9, #1677ff);
+  }
+
   .ol-tmdb-search-mode-switch {
     margin-left: auto;
     display: inline-flex;
