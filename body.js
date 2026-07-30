@@ -20,7 +20,7 @@
     const SEASON_DIR_FORMATS = ["season-2digit", "s-2digit", "season-1digit"];
     const TMDB_ID_FILE_MODES = ["files-both", "files-neither", "files-movie-only", "files-tv-only"];
     // 脚本版本号：修改此处即可全局更新对话框显示的版本标识
-    const SCRIPT_VERSION = "Bate_V1.0.0.2026_07_29";
+    const SCRIPT_VERSION = "Bate_V1.0.0.2_20260730";
     const DEFAULTS = {
       rename: true,
       structuring: false,
@@ -1780,7 +1780,7 @@
       const file = state.files.find((item) => item.name === row.name);
       const season = positiveNumber(row.season);
       const episode = positiveNumber(row.episode);
-      if (!file || !state.selectedItem || !season || !episode) {
+      if (!file || !state.selectedItem || season == null || !episode) {
         return { videoName: "" };
       }
       const base = tvEpisodeBaseName(state.selectedItem, row.episodeDetails, season, episode);
@@ -1969,7 +1969,7 @@
         row.result = "";
         const season = positiveNumber(row.season);
         const episode = positiveNumber(row.episode);
-        if (!season || !episode) {
+        if (season == null || !episode) {
           row.episodeDetails = null;
           row.error = "请填写季 / 集";
           failed += 1;
