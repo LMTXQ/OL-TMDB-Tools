@@ -20,7 +20,7 @@
     const SEASON_DIR_FORMATS = ["season-2digit", "s-2digit", "season-1digit"];
     const TMDB_ID_FILE_MODES = ["files-both", "files-neither", "files-movie-only", "files-tv-only"];
     // 脚本版本号：修改此处即可全局更新对话框显示的版本标识
-    const SCRIPT_VERSION = "Bate_V1.0.0.2_20260730";
+    const SCRIPT_VERSION = "Bate_V1.0.3_20260731";
     const DEFAULTS = {
       rename: true,
       structuring: false,
@@ -795,6 +795,43 @@
       let base = parts.join(" - ");
       if (shouldEmbedTmdbIdInFile(options, "tv")) base += tmdbIdTag(show, true);
       return base;
+    };
+
+    // 语言代码 → 中文名映射（ISO 639-1）
+    const LANG_NAME_MAP = {
+      ja: "日语", zh: "中文", cn: "中文", en: "英语",
+      ko: "韩语", fr: "法语", de: "德语", es: "西班牙语",
+      it: "意大利语", ru: "俄语", th: "泰语", pt: "葡萄牙语",
+      ar: "阿拉伯语", hi: "印地语", vi: "越南语", id: "印尼语",
+      pl: "波兰语", nl: "荷兰语", sv: "瑞典语", tr: "土耳其语",
+    };
+    const langName = (code) => (code ? LANG_NAME_MAP[code] || code : "");
+
+    // 选中条目后展示季信息（原始语言 + 季列表），仅 TV 模式
+    const renderSeasonInfo = () => {
+      const item = state.selectedItem;
+      if (!item || state.mode !== "tv") return "";
+      const id = item.id;
+      const showUrl = `https://www.themoviedb.org/tv/${id}`;
+      const lang = item.original_language
+        ? `${langName(item.original_language)} (${item.original_language})`
+        : "未知";
+      const seasonLinkHtml = (url) =>
+        `<a class="ol-tmdb-result-link" href="${url}" target="_blank" rel="noopener noreferrer" title="在 TMDB 打开" aria-label="在 TMDB 打开"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg></a>`;
+      const seasons = (item.seasons || [])
+        .slice()
+        .sort((a, b) => (a.season_number ?? 0) - (b.season_number ?? 0))
+        .map((s) => {
+          const num = s.season_number ?? 0;
+          const count = s.episode_count ?? 0;
+          const rawName = (s.name || "").trim();
+          const meaningful = rawName && !/^Season\s+\d+$/i.test(rawName);
+          const name = meaningful ? ` ${rawName}` : "";
+          if (num === 0) return `<div class="ol-tmdb-season-item">第 0 季：${name} (${count}集·特别篇)${seasonLinkHtml(`${showUrl}/season/${num}`)}</div>`;
+          return `<div class="ol-tmdb-season-item">第 ${num} 季：${name} (${count}集)${seasonLinkHtml(`${showUrl}/season/${num}`)}</div>`;
+        })
+        .join("");
+      return `<div class="ol-tmdb-season-lang"><strong>原始语言：</strong> ${escapeHtml(lang)}${seasonLinkHtml(showUrl)}</div><div class="ol-tmdb-season-list">${seasons}</div>`;
     };
 
     const targetBaseName = () => {
@@ -1935,7 +1972,7 @@
     const fillSequentialEpisodes = (season, firstEpisode) => {
       const normalizedSeason = positiveNumber(season);
       const normalizedEpisode = positiveNumber(firstEpisode);
-      if (!normalizedSeason || !normalizedEpisode) return false;
+      if (normalizedSeason == null || !normalizedEpisode) return false;
       state.tvBatchRows.forEach((row, index) => {
         row.season = normalizedSeason;
         row.episode = normalizedEpisode + index;
@@ -2524,6 +2561,8 @@
       updatePermissionControls();
       const customTitleRow = $(".ol-tmdb-custom-title-row");
       if (customTitleRow) customTitleRow.dataset.hidden = String(!state.selectedItem);
+      const seasonInfo = $(".ol-tmdb-season-info");
+      if (seasonInfo) seasonInfo.innerHTML = renderSeasonInfo();
       const customTitleInput = $(".ol-tmdb-custom-title");
       if (customTitleInput && document.activeElement !== customTitleInput) {
         customTitleInput.value = state.customTitle;
@@ -2920,6 +2959,8 @@
               row.result = "";
             });
           }
+          // 先渲染一次：季信息（原始语言/季列表）立即显示，集预览随后异步更新
+          render();
           const result = await fetchTvBatchEpisodes();
           render();
           setStatus(
@@ -3399,6 +3440,7 @@
                   <input class="ol-tmdb-input ol-tmdb-custom-title" type="text" placeholder="如 TMDB 标题未及时更新可在此覆盖">
                 </label>
               </div>
+              <div class="ol-tmdb-season-info"></div>
               <div class="ol-tmdb-preview"></div>
               <div class="ol-tmdb-row ol-tmdb-operation-options">
                 <label class="ol-tmdb-check"><input class="ol-tmdb-do-rename" type="checkbox"> 改名</label>
