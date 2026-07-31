@@ -983,3 +983,35 @@
       grid-template-columns: 1fr;
     }
   }
+
+  /* 季信息展示区（原始语言 + 季列表），位于自定义标题与预览之间 */
+  .ol-tmdb-season-info {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding: 6px 8px;
+    margin: 4px 0;
+    background: var(--hope-colors-neutral1, #f5f5f5);
+    border: 1px solid var(--hope-colors-neutral5, #e8e8e8);
+    border-radius: 4px;
+    font-size: 12px;
+  }
+  .ol-tmdb-season-info:empty {
+    display: none;
+  }
+  .ol-tmdb-season-list {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+  }
+  .ol-tmdb-season-lang,
+  .ol-tmdb-season-item {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+  }
+  .ol-tmdb-season-info .ol-tmdb-result-link {
+    width: 22px;
+    height: 22px;
+    flex-shrink: 0;
+  }
