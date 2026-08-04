@@ -20,7 +20,7 @@
     const SEASON_DIR_FORMATS = ["season-2digit", "s-2digit", "season-1digit"];
     const TMDB_ID_FILE_MODES = ["files-both", "files-neither", "files-movie-only", "files-tv-only"];
     // 脚本版本号：修改此处即可全局更新对话框显示的版本标识
-    const SCRIPT_VERSION = "Bate_V1.0.3_20260731";
+    const SCRIPT_VERSION = "Bate_V1.0.3_20260804";
     const DEFAULTS = {
       rename: true,
       structuring: false,
@@ -447,7 +447,7 @@
       }
 
       // 模式 4.5：#NN 集数（井号格式），季数由 S<数字>/X<数字>/Season<数字|罗马> 提取
-      const hashMatch = base.match(/#\s*(\d{1,3})(?:v(\d+))?\b/);
+      const hashMatch = base.match(/#\s*(\d{1,3})(?:v(\d+))?\b/i);
       if (hashMatch) {
         const episode = Number(hashMatch[1]);
         const version = hashMatch[2] ? Number(hashMatch[2]) : undefined;
@@ -471,7 +471,7 @@
       // 模式 5：方括号集数 [NN] / [NNvN] / [NN 标记] / [NNvN 标记]
       // 标记可为 END、Fin、Final、完结、最终回 等表示最后一集的任意词，季数由 X<数字> 标记提取
       // trailing 标记前必须有分隔符，避免 [1080P] 等技术标记误匹配
-      const bracketMatch = base.match(/\[(\d{1,3})(?:v(\d+))?(?:[._\s-]+[^\]\[]+)?\]/);
+      const bracketMatch = base.match(/\[(\d{1,3})(?:v(\d+))?(?:[._\s-]+[^\]\[]+)?\]/i);
       if (bracketMatch) {
         const episode = Number(bracketMatch[1]);
         const version = bracketMatch[2] ? Number(bracketMatch[2]) : undefined;
@@ -504,9 +504,10 @@
         const season = seasonInfo ? seasonInfo.season : 1;
         const searchStart = seasonInfo ? seasonInfo.endIndex : 0;
         const searchText = stripped.slice(searchStart);
-        const episodeMatch = searchText.match(/(?:^|[\s\-_])(\d{1,3})(?:[\s\-_]|$)/);
+        const episodeMatch = searchText.match(/(?:^|[\s\-_])(\d{1,3})(?:v(\d+))?(?:[\s\-_]|$)/i);
         if (episodeMatch) {
           const episode = Number(episodeMatch[1]);
+          const version = episodeMatch[2] ? Number(episodeMatch[2]) : undefined;
           const titleEnd = seasonInfo ? seasonInfo.startIndex : searchStart + episodeMatch.index;
           const title = stripped
             .slice(0, titleEnd)
@@ -517,6 +518,7 @@
             season: Number.isFinite(season) && season >= 0 ? season : 1,
             episode,
             title,
+            version,
           };
         }
       }
@@ -1225,6 +1227,29 @@
       return lines.join("\n");
     };
 
+    // 复制文本到剪贴板：优先 Clipboard API，失败回退 execCommand；返回是否成功
+    const copyTextToClipboard = async (text) => {
+      if (!text) return false;
+      try {
+        await navigator.clipboard.writeText(text);
+        return true;
+      } catch {
+        try {
+          const textarea = document.createElement("textarea");
+          textarea.value = text;
+          textarea.style.position = "fixed";
+          textarea.style.opacity = "0";
+          document.body.appendChild(textarea);
+          textarea.select();
+          document.execCommand("copy");
+          textarea.remove();
+          return true;
+        } catch {
+          return false;
+        }
+      }
+    };
+
     const copyExecutionReport = async () => {
       const text = executionReportText(state.executionReport);
       if (!text) return;
@@ -1680,6 +1705,33 @@
     const buildImageUrl = (path, size = "w185") =>
       path ? `https://image.tmdb.org/t/p/${size}${path}` : "";
 
+    // 影视标签（类型）映射：tmdbRequest 已自带会话缓存，这里再缓存解析后的 id→name 表
+    const genreMaps = { movie: null, tv: null };
+    const fetchGenres = async (type) => {
+      if (genreMaps[type]) return genreMaps[type];
+      try {
+        const data = await tmdbRequest(`/genre/${type}/list`);
+        const map = {};
+        (data.genres || []).forEach((g) => {
+          map[g.id] = g.name;
+        });
+        genreMaps[type] = map;
+        return map;
+      } catch {
+        genreMaps[type] = {};
+        return {};
+      }
+    };
+
+    // 兼容两种来源：搜索结果用 genre_ids（数字数组），详情接口用 genres（{id,name} 数组）
+    const itemGenres = (item) => {
+      if (Array.isArray(item?.genres) && item.genres.length) {
+        return item.genres.map((g) => g.name).filter(Boolean);
+      }
+      const map = genreMaps[state.mode] || {};
+      return (item?.genre_ids || []).map((id) => map[id]).filter(Boolean);
+    };
+
     const syncTvBatchRows = () => {
       if (state.mode !== "tv") {
         state.tvBatchRows = [];
@@ -1984,16 +2036,15 @@
     };
 
     const bindBatchOverviewActions = (preview) => {
-      $(".ol-tmdb-fill-sequential", preview)?.addEventListener("click", () => {
+      $(".ol-tmdb-fill-sequential", preview)?.addEventListener("click", async () => {
         const season = $(".ol-tmdb-fill-season", preview)?.value;
         const episode = $(".ol-tmdb-fill-episode", preview)?.value;
         if (!fillSequentialEpisodes(season, episode)) {
           setStatus("连续填充需要有效的季和起始集", "error");
           return;
         }
-        const count = state.tvBatchRows.length;
-        renderPreview();
-        setStatus(`已按文件顺序填充 ${count} 集；请检查后更新逐集预览`, "ok");
+        // 连续填充后自动更新逐集预览
+        await hydrateTvBatchEpisodes();
       });
     };
 
@@ -2302,12 +2353,17 @@
           const selected = state.selectedItem?.id === item.id;
           const poster = buildImageUrl(item.poster_path, "w154");
           const original = state.mode === "tv" ? item.original_name : item.original_title;
+          const genres = itemGenres(item);
+          const tagsHtml = genres.length
+            ? `<div class="ol-tmdb-tags">${genres.map((g) => `<span class="ol-tmdb-tag">${escapeHtml(g)}</span>`).join("")}</div>`
+            : "";
           const tmdbUrl = `https://www.themoviedb.org/${state.mode === "tv" ? "tv" : "movie"}/${item.id}${state.mode === "tv" ? "/seasons" : ""}`;
           return `<div class="ol-tmdb-result" role="button" tabindex="0" data-id="${item.id}" data-selected="${selected}">
             ${poster ? `<img class="ol-tmdb-poster" alt="" src="${escapeHtml(poster)}">` : '<div class="ol-tmdb-poster"></div>'}
             <div>
               <div class="ol-tmdb-name" title="${escapeHtml(title)}">${escapeHtml(title)}</div>
               <div class="ol-tmdb-meta">${escapeHtml(year || "未知年份")} · ${escapeHtml((original || "").slice(0, 80))}</div>
+              ${tagsHtml}
             </div>
             <div class="ol-tmdb-result-actions">
               <a class="ol-tmdb-result-link" href="${escapeHtml(tmdbUrl)}" target="_blank" rel="noopener noreferrer" title="在 TMDB 打开" aria-label="在 TMDB 打开">
@@ -2871,7 +2927,10 @@
       setStatus("正在搜索 TMDB...");
       try {
         localStorage.setItem(STORAGE.language, $(".ol-tmdb-language").value);
-        const payload = state.mode === "tv" ? await searchTv(query, year) : await searchMovie(query, year);
+        const [payload] = await Promise.all([
+          state.mode === "tv" ? searchTv(query, year) : searchMovie(query, year),
+          fetchGenres(state.mode),
+        ]);
         state.results = (payload.results || []).slice(0, 10);
         state.selectedItem = null;
         state.selectedEpisode = null;
@@ -2946,6 +3005,8 @@
         const customTitleInput = $(".ol-tmdb-custom-title");
         if (customTitleInput) customTitleInput.value = "";
         state.selectedEpisode = null;
+        // 选中条目即把影视名（不含年份）写入剪贴板
+        const titleCopied = await copyTextToClipboard(itemDisplayTitle(state.selectedItem));
         if (state.mode === "tv" && isTvBatchActive()) {
           syncTvBatchRows();
           // 工具栏「季」手动填的值优先于文件名解析出的季（解析错误或缺失时由用户兜底）
@@ -2966,7 +3027,7 @@
           setStatus(
             result.failed
               ? `已选择 TMDB 条目，${result.failed} 项需要修正${tmdbConcurrencyNotice()}`
-              : `已选择 TMDB 条目，已匹配 ${result.success} 集${tmdbConcurrencyNotice()}`,
+              : `已选择 TMDB 条目，已匹配 ${result.success} 集${tmdbConcurrencyNotice()}${titleCopied ? "，片名已复制到剪贴板" : ""}`,
             result.failed ? "error" : "ok",
           );
           return;
@@ -2979,7 +3040,7 @@
           }
         }
         render();
-        setStatus("已选择 TMDB 条目", "ok");
+        setStatus(titleCopied ? "已选择 TMDB 条目，片名已复制到剪贴板" : "已选择 TMDB 条目", "ok");
       } catch (error) {
         setStatus(error.message, "error");
       } finally {
@@ -3415,7 +3476,12 @@
                   <div class="ol-tmdb-candidate-list" data-open="false"></div>
                 </label>
                 <label class="ol-tmdb-field ol-tmdb-movie-only" style="flex: 0.6">
-                  <span class="ol-tmdb-label">年份</span>
+                  <span class="ol-tmdb-label ol-tmdb-search-mode-field">
+                    年份
+                    <span class="ol-tmdb-query-tools">
+                      <button type="button" class="ol-tmdb-year-clear" title="清空年份" aria-label="清空年份">×</button>
+                    </span>
+                  </span>
                   <input class="ol-tmdb-input ol-tmdb-year" type="text" inputmode="numeric">
                 </label>
                 <label class="ol-tmdb-field ol-tmdb-tv-only" style="flex: 0.5">
@@ -3571,6 +3637,13 @@
         if (queryInput) {
           queryInput.value = "";
           queryInput.focus();
+        }
+      });
+      $(".ol-tmdb-year-clear", mask).addEventListener("click", () => {
+        const yearInput = $(".ol-tmdb-year", mask);
+        if (yearInput) {
+          yearInput.value = "";
+          yearInput.focus();
         }
       });
       $(".ol-tmdb-query-restore", mask).addEventListener("click", () => {
