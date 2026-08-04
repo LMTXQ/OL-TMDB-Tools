@@ -369,6 +369,24 @@
     font-size: 12px;
   }
 
+  /* 影视标签（类型）chips：紧随 meta 行，复用主题色保持视觉和谐 */
+  .ol-tmdb-tags {
+    margin-top: 4px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+  }
+
+  .ol-tmdb-tag {
+    font-size: 11px;
+    line-height: 1.4;
+    padding: 1px 6px;
+    border-radius: 4px;
+    white-space: nowrap;
+    background: color-mix(in srgb, var(--hope-colors-primary9, #1677ff) 10%, transparent);
+    color: var(--hope-colors-primary10, #0958d9);
+  }
+
   .ol-tmdb-poster {
     width: 54px;
     height: 80px;
