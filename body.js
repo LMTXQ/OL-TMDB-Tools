@@ -131,6 +131,7 @@
       subtitleScanCache: new Map(),
       customTitle: "",
       searchMode: "keyword",
+      queryTouched: false,
       titleCandidates: { source: "", list: [], index: 0 },
       excludedSubtitles: new Set(),
       cachedSubtitles: new Map(),
@@ -2936,6 +2937,9 @@
         state.selectedEpisode = null;
         render();
         setStatus(state.results.length ? `找到 ${state.results.length} 个结果` : "TMDB 无搜索结果", state.results.length ? "" : "error");
+        if (state.results.length === 1) {
+          await selectItem(state.results[0].id);
+        }
       } catch (error) {
         setStatus(error.message, "error");
       } finally {
@@ -3597,6 +3601,9 @@
       });
       $(".ol-tmdb-mode", mask).addEventListener("change", (event) => {
         state.mode = event.target.value;
+        // 用户已手动修改搜索框时，切换模式不重置搜索词（仅本次打开会话内生效）
+        const preserveQuery = state.queryTouched;
+        const savedQuery = preserveQuery ? $(".ol-tmdb-query")?.value ?? "" : "";
         state.selectedItem = null;
         state.selectedEpisode = null;
         state.customTitle = "";
@@ -3611,6 +3618,10 @@
         }
         updateModeUi();
         hydrateSearchFromFile();
+        if (preserveQuery) {
+          const queryInput = $(".ol-tmdb-query");
+          if (queryInput) queryInput.value = savedQuery;
+        }
         render();
       });
       $(".ol-tmdb-search", mask).addEventListener("click", runSearch);
@@ -3629,6 +3640,9 @@
       $(".ol-tmdb-query", mask).addEventListener("keydown", (event) => {
         if (event.key === "Enter") runSearch();
       });
+      $(".ol-tmdb-query", mask).addEventListener("input", () => {
+        state.queryTouched = true;
+      });
       $(".ol-tmdb-year", mask).addEventListener("keydown", (event) => {
         if (event.key === "Enter") runSearch();
       });
@@ -3637,6 +3651,7 @@
         if (queryInput) {
           queryInput.value = "";
           queryInput.focus();
+          state.queryTouched = true;
         }
       });
       $(".ol-tmdb-year-clear", mask).addEventListener("click", () => {
@@ -3653,6 +3668,7 @@
           return;
         }
         hydrateSearchFromFile();
+        state.queryTouched = false;
       });
       $(".ol-tmdb-query-title-file", mask).addEventListener("click", () => applyTitleCandidate("file"));
       $(".ol-tmdb-query-title-dir", mask).addEventListener("click", () => applyTitleCandidate("dir"));
@@ -3784,6 +3800,7 @@
       state.results = [];
       state.selectedItem = null;
       state.selectedEpisode = null;
+      state.queryTouched = false;
       withStatus(loadFiles);
     };
 
