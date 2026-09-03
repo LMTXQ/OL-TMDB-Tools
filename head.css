@@ -291,6 +291,21 @@
     padding: 7px 12px;
   }
 
+  /* 模式推断依据提示，控件行下方小字 */
+  .ol-tmdb-mode-hint {
+    display: block;
+    font-size: 11px;
+    color: var(--hope-colors-neutral8, #888);
+    line-height: 1.3;
+    padding: 0 0 2px 0;
+  }
+  .ol-tmdb-mode-hint[data-kind="warn"] {
+    color: var(--hope-colors.warning, #f0a020);
+  }
+  .ol-tmdb-mode-hint:empty {
+    display: none;
+  }
+
   .ol-tmdb-list {
     border: 1px solid var(--hope-colors-neutral5, #e8e8e8);
     border-radius: 8px;
@@ -386,6 +401,17 @@
     background: color-mix(in srgb, var(--hope-colors-primary9, #1677ff) 10%, transparent);
     color: var(--hope-colors-primary10, #0958d9);
   }
+  .ol-tmdb-best {
+    font-size: 11px;
+    line-height: 1.4;
+    padding: 1px 6px;
+    border-radius: 4px;
+    white-space: nowrap;
+    vertical-align: middle;
+    background: color-mix(in srgb, #52c41a 12%, transparent);
+    color: #389e0c;
+    font-weight: 600;
+  }
 
   .ol-tmdb-poster {
     width: 54px;
@@ -404,10 +430,57 @@
     font-size: 13px;
     display: grid;
     gap: 8px;
+    min-width: 0;
+    overflow: hidden;
   }
 
-  .ol-tmdb-custom-title-row[data-hidden="true"] {
+  .ol-tmdb-custom-title-row[data-hidden="true"],
+  .ol-tmdb-custom-tag-row[data-hidden="true"] {
     display: none;
+  }
+
+  .ol-tmdb-custom-title-row {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+  }
+
+  .ol-tmdb-custom-title-row > .ol-tmdb-field:first-child {
+    flex: 1;
+    min-width: 0;
+  }
+
+  .ol-tmdb-custom-year-field {
+    flex: 0 0 120px;
+    min-width: 0;
+  }
+
+  .ol-tmdb-tag-presets {
+    display: inline-flex;
+    gap: 2px;
+    margin-left: 4px;
+  }
+
+  .ol-tmdb-tag-presets button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 20px;
+    height: 20px;
+    border: 1px solid var(--hope-colors-neutral6, #d9d9d9);
+    border-radius: 4px;
+    background: transparent;
+    color: var(--hope-colors-neutral11, #555);
+    font-size: 11px;
+    line-height: 1;
+    padding: 0 4px;
+    cursor: pointer;
+    transition: border-color 0.15s ease, color 0.15s ease;
+  }
+
+  .ol-tmdb-tag-presets button:hover {
+    border-color: var(--hope-colors-primary9, #1677ff);
+    color: var(--hope-colors-primary9, #1677ff);
   }
 
   .ol-tmdb-search-mode-field {
@@ -443,36 +516,58 @@
     color: var(--hope-colors-primary9, #1677ff);
   }
 
-  /* 搜索按钮上方的 [TMDB] 跳转按钮（与 [名][夹] 视觉一致，宽度自适应） */
   .ol-tmdb-search-group {
     display: flex;
     flex-direction: column;
     align-items: stretch;
     align-self: stretch;
     justify-content: space-between;
-    gap: 6px;
+    gap: 4px;
   }
 
-  .ol-tmdb-tmdb-link {
+  .ol-tmdb-site-links {
+    display: flex;
+    gap: 2px;
+  }
+
+  .ol-tmdb-site-links button {
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    box-sizing: border-box;
-    min-height: 24px;
+    flex: 1;
+    height: 20px;
     border: 1px solid var(--hope-colors-neutral6, #d9d9d9);
     border-radius: 4px;
     background: transparent;
     color: var(--hope-colors-neutral11, #555);
     font-size: 13px;
+    font-weight: bold;
     line-height: 1;
-    padding: 0 6px;
+    padding: 0;
     cursor: pointer;
     transition: border-color 0.15s ease, color 0.15s ease;
   }
 
-  .ol-tmdb-tmdb-link:hover {
+  .ol-tmdb-site-links .ol-tmdb-tmdb-link:hover {
     border-color: var(--hope-colors-primary9, #1677ff);
     color: var(--hope-colors-primary9, #1677ff);
+  }
+
+  .ol-tmdb-site-links .ol-tmdb-douban-link:hover {
+    border-color: #007722;
+    color: #007722;
+  }
+
+  .ol-tmdb-douban-search-link {
+    color: #007722 !important;
+    font-size: 12px;
+    font-weight: bold;
+    text-decoration: none;
+    margin-left: 4px;
+  }
+
+  .ol-tmdb-douban-search-link:hover {
+    text-decoration: underline;
   }
 
   .ol-tmdb-search-mode-switch {
@@ -539,6 +634,7 @@
     margin-top: 6px;
     padding-top: 6px;
     border-top: 1px dashed var(--hope-colors-neutral5, #e8e8e8);
+    overflow: hidden;
   }
 
   .ol-tmdb-sub-head {
@@ -550,13 +646,25 @@
   }
 
   .ol-tmdb-sub-check {
-    flex-shrink: 0;
     display: inline-flex;
     align-items: center;
+    gap: 6px;
+    flex: 1;
+    min-width: 0;
   }
 
   .ol-tmdb-sub-check input {
     margin: 0;
+    cursor: pointer;
+  }
+
+  .ol-tmdb-auto-scan-label,
+  .ol-tmdb-local-season-label {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 13px;
+    user-select: none;
     cursor: pointer;
   }
 
@@ -574,14 +682,54 @@
     margin-top: 4px;
     max-height: 160px;
     overflow-y: auto;
+    overflow-x: hidden;
   }
 
   .ol-tmdb-sub-row {
     display: flex;
-    align-items: center;
+    align-items: flex-start;
     gap: 6px;
     padding: 2px 0;
     flex-wrap: wrap;
+    max-width: 100%;
+  }
+
+  .ol-tmdb-sub-source {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .ol-tmdb-sub-target {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    width: 100%;
+    padding-left: 22px;
+    overflow: hidden;
+  }
+
+  .ol-tmdb-sub-target .ol-tmdb-code {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    min-width: 0;
+  }
+
+  .ol-tmdb-sub-dest {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    width: 100%;
+    padding-left: 22px;
+    overflow: hidden;
+  }
+
+  .ol-tmdb-sub-dest .ol-tmdb-code {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    min-width: 0;
   }
 
   .ol-tmdb-sub-arrow {
@@ -606,10 +754,23 @@
     gap: 8px;
   }
 
-  .ol-tmdb-preview-head > div {
+  .ol-tmdb-preview-head > div:first-child {
     min-width: 0;
     display: grid;
     gap: 2px;
+  }
+
+  .ol-tmdb-preview-actions,
+  .ol-tmdb-sub-actions {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-shrink: 0;
+  }
+
+  .ol-tmdb-collapse-toggle {
+    padding: 4px 8px;
+    font-size: 12px;
   }
 
   .ol-tmdb-plan-summary {
@@ -849,6 +1010,61 @@
     color: var(--hope-colors-warning10, #874d00);
   }
 
+  /* 季映射摘要条 */
+  .ol-tmdb-season-mapping-summary {
+    font-size: 12px;
+    color: var(--hope-colors-info9, #0958d9);
+    background: var(--hope-colors-info3, #e6f4ff);
+    border: 1px solid var(--hope-colors-info5, #91caff);
+    border-radius: 4px;
+    padding: 4px 8px;
+    margin: 4px 0;
+  }
+  .ol-tmdb-season-mapping-summary:empty {
+    display: none;
+  }
+
+  /* 集数单元格（含输入框+来源徽标+映射提示） */
+  .ol-tmdb-batch-episode-cell {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 1px;
+  }
+  .ol-tmdb-batch-episode-cell .ol-tmdb-batch-input {
+    width: 100%;
+  }
+
+  /* 来源徽标 */
+  .ol-tmdb-batch-source {
+    font-size: 10px;
+    padding: 0 4px;
+    border-radius: 3px;
+    line-height: 16px;
+    white-space: nowrap;
+  }
+  .ol-tmdb-batch-source[data-source="inferred"] {
+    color: var(--hope-colors-warning10, #874d00);
+    background: var(--hope-colors-warning3, #fffbe6);
+  }
+  .ol-tmdb-batch-source[data-source="local"] {
+    color: var(--hope-colors-neutral8, #888);
+    background: var(--hope-colors-neutral3, #f5f5f5);
+  }
+
+  /* 映射提示 */
+  .ol-tmdb-batch-mapping {
+    font-size: 10px;
+    color: var(--hope-colors-info9, #0958d9);
+    white-space: nowrap;
+  }
+
+  /* 季中结局标注 */
+  .ol-tmdb-batch-midfinale {
+    color: var(--hope-colors-warning10, #874d00);
+    margin-left: 2px;
+  }
+
   .ol-tmdb-duplicates {
     display: grid;
     gap: 8px;
@@ -1032,4 +1248,41 @@
     width: 22px;
     height: 22px;
     flex-shrink: 0;
+  }
+
+  /* 文件夹结构预览区，位于季信息与预览之间 */
+  .ol-tmdb-folder-structure-info {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding: 6px 8px;
+    margin: 4px 0;
+    background: var(--hope-colors-neutral1, #f5f5f5);
+    border: 1px solid var(--hope-colors-neutral5, #e8e8e8);
+    border-radius: 4px;
+    font-size: 12px;
+  }
+  .ol-tmdb-folder-structure-info:empty {
+    display: none;
+  }
+  .ol-tmdb-folder-structure-head {
+    margin-bottom: 2px;
+  }
+  .ol-tmdb-folder-tree {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+  }
+  .ol-tmdb-folder-tree-item {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+  }
+  .ol-tmdb-folder-tree-item .ol-tmdb-folder-icon,
+  .ol-tmdb-folder-tree-item .ol-tmdb-folder-branch {
+    flex-shrink: 0;
+  }
+  .ol-tmdb-folder-tree-item .ol-tmdb-folder-branch {
+    color: var(--hope-colors-neutral8, #888);
+    font-family: monospace;
   }
